@@ -180,22 +180,23 @@ class MonteCarloSimulation:
         
         return scaled_TGE_total, months, total_unlocked_history, unlocked_history, distribution
 
-def compute_token_price(TGE_total, total_unlocked_history, users, distribution=None, 
-                        base_price=10.0, elasticity=1.0, buyback_rate=0.2, alpha=0.5):
+def compute_token_price(TGE_total, total_unlocked_history, users, 
+                        base_price=10.0, elasticity=1.0, buyback_rate=0.2, alpha=0.5,
+                        distribution=None):
     """
     Computes token price over time based on a supply/demand model that incorporates both
     circulating supply and effective supply, with user behavior weighted by distribution.
-
+    
     If a distribution dictionary is provided (with keys "small", "medium", "large", "sybil" 
     summing to 100), then compute average sell weight as:
         avg_sell_weight = (small_pct*1.0 + medium_pct*0.8 + large_pct*0.3 + sybil_pct*1.0) / 100
     Otherwise, compute the average sell weight from user objects.
-
+    
     Then, define:
       circulating_supply(t) = TGE_total + (postTGE_unlocked(t) - postTGE_unlocked(0)) * avg_sell_weight
       effective_supply(t) = TGE_total + (postTGE_unlocked(t) - postTGE_unlocked(0)) * (avg_sell_weight*(1 - buyback_rate))
       combined_supply = alpha * circulating_supply + (1 - alpha) * effective_supply
-
+    
     Price is:
       price(t) = base_price * (TGE_total / combined_supply(t))^elasticity
     """
@@ -235,6 +236,57 @@ def compute_token_price(TGE_total, total_unlocked_history, users, distribution=N
     combined_supply = alpha * circulating_supply + (1 - alpha) * effective_supply
     prices = base_price * (TGE_total / combined_supply) ** elasticity
     return prices
+
+def simulate_price_evolution_dynamic(TGE_total, total_unlocked_history, users, base_price=10.0, 
+                                     elasticity=1.0, buyback_rate=0.2, alpha=0.5, 
+                                     mu=0.0, sigma=0.05, jump_intensity=0.1, jump_mean=-0.05, jump_std=0.1, distribution=None):
+        """
+        Simulates the dynamic evolution of the token price by combining a supply/demand model 
+        (based on the fixed TGE allocation and vesting schedule) with a jump-diffusion process 
+        that represents volatility shocks and price jumps.
+        
+        Parameters:
+        TGE_total: The (scaled) TGE token total (a fixed amount, e.g. 15% of total supply).
+        total_unlocked_history: Array or list of total unlocked tokens over time (from vesting).
+        users: List of user objects (used to compute average sell weight, if needed).
+        base_price: The base price at TGE.
+        elasticity: Price elasticity parameter.
+        buyback_rate: Fraction of unlocked tokens that are effectively removed (via buybacks/burns).
+        alpha: Weighting parameter between raw circulating supply and effective supply.
+        mu: Drift rate for the diffusion component (per time unit, e.g. per month).
+        sigma: Volatility for the diffusion component.
+        jump_intensity: Probability per time step of a jump event.
+        jump_mean: Mean percentage jump (e.g. -0.05 means an average 5% drop when a jump occurs).
+        jump_std: Standard deviation of the jump size.
+        
+        Returns:
+        prices: Array of simulated prices over time.
+        
+        The function first computes a baseline supply/demand price using your existing logic,
+        then simulates a jump-diffusion multiplier over time, and finally returns the product.
+        """
+        # 1. Compute the baseline supply/demand price (without dynamic evolution).
+        supply_price = compute_token_price(TGE_total, total_unlocked_history, users, base_price, elasticity, buyback_rate, alpha, distribution)
+        # supply_price is an array, one value per time step.
+        
+        # 2. Simulate a jump-diffusion process for dynamic volatility.
+        n = len(total_unlocked_history)
+        dt = 1  # assume one time unit per step (e.g. 1 month)
+        P_jump = np.zeros(n)
+        P_jump[0] = 1.0  # start with no multiplier at TGE
+        for t in range(1, n):
+            # Continuous diffusion component (geometric Brownian motion).
+            diffusion = np.exp((mu - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * np.random.randn())
+            # Jump component: with probability jump_intensity * dt, apply a jump.
+            if np.random.rand() < jump_intensity * dt:
+                jump = 1.0 + np.random.normal(jump_mean, jump_std)
+            else:
+                jump = 1.0
+            P_jump[t] = P_jump[t-1] * diffusion * jump
+        
+        # 3. Combine the baseline supply price with the dynamic multiplier.
+        prices = supply_price * P_jump
+        return prices
 
 if __name__ == '__main__':
     # Define lists of airdrop conversion policies and pre-TGE rewards policies.
@@ -280,10 +332,11 @@ if __name__ == '__main__':
                 preTGE_rewards_policy=pre_policy
             )
             TGE_total, months, total_unlocked_history, unlocked_history, dist = sim.run()
-            prices = compute_token_price(
-                TGE_total, total_unlocked_history, sim.user_pool.users, 
-                distribution=dist, base_price=base_price, elasticity=elasticity, 
-                buyback_rate=buyback_rate, alpha=0.5
+            prices = simulate_price_evolution_dynamic(
+                TGE_total, total_unlocked_history, sim.user_pool.users,
+                base_price=base_price, elasticity=elasticity, buyback_rate=buyback_rate,
+                alpha=0.5, mu=0.0, sigma=0.05, jump_intensity=0.1, jump_mean=-0.05, jump_std=0.1,
+                distribution=dist
             )
             results[combo_name] = {
                 "TGE_total": TGE_total,
