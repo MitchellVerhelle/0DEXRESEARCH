@@ -53,7 +53,7 @@ class RegularUser(User):
             if self.user_size == 'small':
                 prob_stay = 0.4
             elif self.user_size == 'medium':
-                prob_stay = 0.8
+                prob_stay = 0.7
             elif self.user_size == 'large':
                 prob_stay = 0.9
             else:

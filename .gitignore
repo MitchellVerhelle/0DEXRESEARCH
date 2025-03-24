@@ -1,0 +1,9 @@
+./DS_Store
+
+.ipynb_checkpoints
+.pytest_cache
+.vscode
+
+prompts/
+figures/
+venv/

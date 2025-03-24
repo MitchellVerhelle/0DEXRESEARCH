@@ -22,7 +22,7 @@ from simulation import MonteCarloSimulation, simulate_price_evolution_dynamic
 
 # Helper function to run one simulation combination.
 def run_simulation_for_combo(combo_name, num_users, total_supply, preTGE_steps, simulation_horizon,
-                             ad_policy, pre_policy, base_price, elasticity, buyback_rate):
+                             ad_policy, pre_policy, base_price, elasticity, buyback_rate, alpha=0.5):
     sim = MonteCarloSimulation(
         num_users=num_users,
         total_supply=total_supply,
@@ -36,7 +36,7 @@ def run_simulation_for_combo(combo_name, num_users, total_supply, preTGE_steps, 
     prices = simulate_price_evolution_dynamic(
         TGE_total, total_unlocked_history, sim.user_pool.users,
         base_price=base_price, elasticity=elasticity, buyback_rate=buyback_rate,
-        alpha=0.5, mu=0.0, sigma=0.05, jump_intensity=0.1, jump_mean=-0.05, jump_std=0.1,
+        alpha=alpha, mu=0.0, sigma=0.05, jump_intensity=0.1, jump_mean=-0.05, jump_std=0.1,
         distribution=dist
     )
     return combo_name, {
@@ -69,13 +69,14 @@ if __name__ == '__main__':
     ]
     
     # Simulation parameters.
-    num_users = 100000
-    total_supply = 1_000_000_000
+    num_users = 10_000
+    total_supply = 100_000_000
     preTGE_steps = 50
     simulation_horizon = 60  # months
     base_price = 10.0
-    elasticity = 1.0
-    buyback_rate = 0.2  # 20% of additional unlocked tokens are removed.
+    buyback_rate = 0.2  # 20% of additional unlocked tokens are removed. Should be same as or less than post-TGE token allocation to "Strategic Reserve/Treasury" for now.
+    alpha = 0 # combined_supply = alpha * circulating_supply + (1 - alpha) * effective_supply
+    elasticity = 1.0 # price(t) = base_price * (TGE_total / combined_supply(t))^elasticity
     
     results = {}
     tasks = []
@@ -90,7 +91,8 @@ if __name__ == '__main__':
                     run_simulation_for_combo,
                     combo_name,
                     num_users, total_supply, preTGE_steps, simulation_horizon,
-                    ad_policy, pre_policy, base_price, elasticity, buyback_rate
+                    ad_policy, pre_policy, base_price, elasticity, buyback_rate,
+                    alpha=alpha
                 )
                 tasks.append(task)
         
