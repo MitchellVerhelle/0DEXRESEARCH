@@ -46,37 +46,37 @@ For **SybilUsers**, I generate from LogNormal(5, 1.0), since I am assuming that 
 
 ### Retention and Active User Model
 
-I model user retention as a differential‐equation model that factors in both a baseline activation/churn and an adjustment for token price (which proxies the opportunity cost). The proportion of active users, \( A(t) \), can be modeled as follows:
+I model user retention as a differential‐equation model that factors in both a baseline activation/churn and an adjustment for token price (which proxies the opportunity cost). The proportion of active users, $A(t)$, can be modeled as follows:
 
 $$
 \frac{dA}{dt}(t) = \alpha \, (N - A(t)) - \beta \, A(t)
 $$
 
 where:
-- \( A(t) \) is the number of active users at time \( t \),
-- \( N \) is the total number of potential users (currently set to 10,000, but normalized to 1 as you'll read below),
-- \( \alpha \) is the activation rate,
-- \( \beta \) is the deactivation rate (churn rate).
+- $A(t)$ is the number of active users at time $t$,
+- $N$ is the total number of potential users (currently set to 10,000, but normalized to 1 as you'll read below),
+- $\alpha$ is the activation rate,
+- $\beta$ is the deactivation rate (churn rate).
 
 Source: [Bass Diffusion Model](https://en.wikipedia.org/wiki/Bass_diffusion_model)
 
-I work with a normalized version of this model and extend it to incorporate the effect of opportunity cost, which I assume is directly related to the token price \( p(t) \) on churn:
+I work with a normalized version of this model and extend it to incorporate the effect of opportunity cost, which I assume is directly related to the token price $p(t)$ on churn:
 
 $$
 \frac{dA}{dt}(t) = \alpha \, (1 - A(t)) - \beta \left(1 + \theta \, \frac{p(t) - p_0}{p_0}\right) A(t) + \sigma \, \eta(t)
 $$
 
 where:
-- \( A(t) \in [0,1] \) is the proportion of active users at time \( t \),
-- \( p(t) \) is the price at time \( t \),
-- \( p_0 \) is a "baseline" token price (like the base price at TGE),
-- \( \theta \) is a sensitivity parameter,
-- \( \sigma \) scales random fluctuations,
-- \( \eta(t) \) is a white-noise term.
+- $A(t) \in [0,1]$ is the proportion of active users at time $t$,
+- $p(t)$ is the price at time $t$,
+- $p_0$ is a "baseline" token price (like the base price at TGE),
+- $\theta$ is a sensitivity parameter,
+- $\sigma$ scales random fluctuations,
+- $\eta(t)$ is a white-noise term.
 
 Source: [Churn modeling in online services](https://www.sciencedirect.com/science/article/pii/S0167923606000470)
 
-I use Euler-Maruyama steps to discretize this equation in my code. \( \epsilon_t \sim \mathcal{N}(0,\sigma \, dt) \):
+I use Euler-Maruyama steps to discretize this equation in my code. $\epsilon_t \sim \mathcal{N}(0,\sigma \, dt)$:
 
 $$
 A_{t+1} = A_t + \left[\alpha (1-A_t) - \beta \left(1+\theta\, \frac{p(t)-p_0}{p_0}\right) A_t \right] dt + \epsilon_t
@@ -95,7 +95,7 @@ From **UserPool**, I run a `stepall` function which steps each user in the user 
 #### Pre-TGE
 - Larger users are more likely to interact with the testnet in larger proportion if the reward policy favors larger users. Larger users contributing to the platform is beneficial for both parties, but could be harmful if the large user decides to leave, so not too much wealth should be allocated to large users.
 - Time steps are in months, to stay consistent with Forgd, which uses mostly monthly vesting schedules.
-- Users interact based on a differential equation which specifies some potential, an amount users are willing to spend, a rate of loss \( \delta \) representing opportunity cost, and an interaction\_factor which represents how frequently the user will contribute to the platform. Larger users have larger endowments and interaction\_factors, but also higher opportunity costs since they will want larger rewards.
+- Users interact based on a differential equation which specifies some potential, an amount users are willing to spend, a rate of loss $\delta$ representing opportunity cost, and an interaction\_factor which represents how frequently the user will contribute to the platform. Larger users have larger endowments and interaction\_factors, but also higher opportunity costs since they will want larger rewards.
 - Trading volume is estimated monthly for each user size/type.
 - Users are rewarded points depending on each **preTGE_rewards.py** policy.
 
@@ -157,83 +157,83 @@ Price starts at a constant value. [Forgd](https://app.forgd.com/academy/how-to-g
 
 Then price starts evolving at TGE (time 0). We model price as follows:
 
-#### 1. **Baseline Supply/Demand Price**
+#### 1. Baseline Supply/Demand Price
 
-The baseline price at time *t* is given by:
+The baseline price at time $t$ is given by:
 
 $$
-\text{price}(t) = \text{base\_price} \times \left(\frac{TGE\_total}{\text{combined\_supply}(t)}\right)^{\text{elasticity}}
+price(t) = base_{price} \times \left(\frac{TGE_{total}}{combined_{supply}(t)}\right)^{elasticity}
 $$
 
 where:
-- **TGE\_total**: The fixed token amount distributed at the Token Generation Event (TGE).  
-- **base\_price**: The initial token price at TGE.  
-- **elasticity**: A parameter representing how sensitive the token price is to changes in supply. A higher elasticity means that a small change in supply results in a larger change in price.  
-- **combined\_supply(t)**: A weighted combination of the circulating and effective supply at time *t*, defined as:
+- $TGE_{total}$: The fixed token amount distributed at the Token Generation Event (TGE).  
+- $base_{price}$: The initial token price at TGE.  
+- $elasticity$: A parameter representing how sensitive the token price is to changes in supply. A higher elasticity means that a small change in supply results in a larger change in price.  
+- $combined_{supply}(t)$: A weighted combination of the circulating and effective supply at time $t$, defined as:
 
 $$
-\text{combined\_supply}(t) = \alpha \times \text{circulating\_supply}(t) + (1 - \alpha) \times \text{effective\_supply}(t)
+combined_{supply}(t) = \alpha \times circulating_{supply}(t) + (1 - \alpha) \times effective_{supply}(t)
 $$
 
-  - **circulating\_supply(t)** is calculated as:
+  - $circulating_{supply}(t)$ is calculated as:
 
     $$ 
-    \text{circulating\_supply}(t) = TGE\_total + \left(\text{postTGE\_unlocked}(t) - \text{postTGE\_unlocked}(0)\right) \times \text{avg\_sell\_weight}
+    circulating_{supply}(t) = TGE_{total} + \left(postTGE_{unlocked}(t) - postTGE_{unlocked}(0)\right) \times avg_{sell_{weight}}
     $$
 
-  - **effective\_supply(t)**, adjusted for tokens removed from circulation (e.g., via buybacks), is computed as:
+  - $effective_{supply}(t)$, adjusted for tokens removed from circulation (e.g., via buybacks), is computed as:
 
     $$
-    \text{effective\_supply}(t) = TGE\_total + \left(\text{postTGE\_unlocked}(t) - \text{postTGE\_unlocked}(0)\right) \times \Bigl(\text{avg\_sell\_weight} \times (1 - \text{buyback\_rate})\Bigr)
+    effective_{supply}(t) = TGE_{total} + \left(postTGE_{unlocked}(t) - postTGE_{unlocked}(0)\right) \times \left(avg_{sell_{weight}} \times (1 - buyback_{rate})\right)
     $$
 
-- **avg\_sell\_weight**: The average fraction of unlocked tokens that enter the market as sell orders. This can be computed from user data or provided via a distribution.  
-- **buyback\_rate**: The fraction of unlocked tokens effectively removed from circulation through buybacks or burns.  
-- **\(\alpha\)**: A weighting parameter between the raw circulating supply and the effective supply.
+- $avg_{sell_{weight}}$: The average fraction of unlocked tokens that enter the market as sell orders. This can be computed from user data or provided via a distribution.  
+- $buyback_{rate}$: The fraction of unlocked tokens effectively removed from circulation through buybacks or burns.  
+- $\alpha$: A weighting parameter between the raw circulating supply and the effective supply.
 
 This supply/demand model operates under the idea that as more tokens become available (via vesting), the price adjusts inversely. ([Investopedia on Supply and Demand](https://www.investopedia.com/terms/s/supply-demand.asp)).
 
-#### 2. **Dynamic Price Evolution (Jump-Diffusion Process)**
+#### 2. Dynamic Price Evolution (Jump-Diffusion Process)
 
-To capture market volatility and sudden shocks, a jump-diffusion process is applied. The dynamic multiplier \( P_{\text{jump}}(t) \) is defined recursively:
+To capture market volatility and sudden shocks, a jump-diffusion process is applied. The dynamic multiplier $P_{jump}(t)$ is defined recursively:
 
 - At TGE (time 0):
 
 $$
-P_{\text{jump}}(0) = 1.0
+P_{jump}(0) = 1.0
 $$
 
-- For \( t \ge 1 \):
+- For $t \ge 1$:
 
 $$
-P_{\text{jump}}(t) = P_{\text{jump}}(t-1) \times \exp\Bigl((\mu - 0.5\sigma^2)\Delta t + \sigma \sqrt{\Delta t} \, Z_t\Bigr) \times J_t
+P_{jump}(t) = P_{jump}(t-1) \times \exp\Bigl((\mu - 0.5\sigma^2)\Delta t + \sigma \sqrt{\Delta t} \, Z_t\Bigr) \times J_t
 $$
 
 where:
-- **\(\mu\)**: The drift rate, representing the average return per time unit.  
-- **\(\sigma\)**: The volatility parameter, indicating the randomness in price movements.  
-- **\(\Delta t\)**: The time step (e.g., one month).  
-- **\(Z_t\)**: A random variable drawn from a standard normal distribution \(( Z_t \sim N(0,1) )\).  
-- **\(J_t\)**: The jump component, defined as:
+- $\mu$: The drift rate, representing the average return per time unit.  
+- $\sigma$: The volatility parameter, indicating the randomness in price movements.  
+- $\Delta t$: The time step (e.g., one month).  
+- $Z_t$: A random variable drawn from a standard normal distribution ($Z_t \sim N(0,1)$).  
+- $J_t$: The jump component, defined as:
 
 $$
 J_t = 
 \begin{cases}
-1 + \text{jump\_size}, & \text{with probability } \text{jump\_intensity} \times \Delta t, \\
+1 + jump_{size}, & \text{with probability } jump_{intensity} \times \Delta t, \\
 1, & \text{otherwise},
 \end{cases}
 $$
 
-where **jump\_size** is drawn from a normal distribution with mean **jump\_mean** and standard deviation **jump\_std**.
+where $jump_{size}$ is drawn from a normal distribution with mean $jump_{mean}$ and standard deviation $jump_{std}$.
 
 The jump-diffusion process combines a geometric Brownian motion ([Investopedia on Geometric Brownian Motion](https://www.investopedia.com/terms/g/geometric-brownian-motion.asp)) with a jump component that captures abrupt market events ([ScienceDirect on Jump-Diffusion Models](https://www.sciencedirect.com/topics/engineering/jump-diffusion)). I chose to abstract away more sophisticated market dynamics because I assumed it would suffice for the goal of discovering optimal PreTGE/TGE/PostTGE policies. However, it could make for an interesting extension to consider more advanced frameworks for price evolution depending on assumptions about user behavior.
 
-#### 3. **Final Token Price**
+#### 3. Final Token Price
 
-The final simulated token price at time *t* is:
+The final simulated token price at time $t$ is:
 
 $$
-\text{Final Price}(t) = \text{Supply/Demand Price}(t) \times P_{\text{jump}}(t)
+Final\ Price(t) = price(t) \times P_{jump}(t)
 $$
 
 This means the price is determined by both the fundamental supply/demand mechanics and the stochastic jump-diffusion dynamics.
@@ -242,19 +242,19 @@ This means the price is determined by both the fundamental supply/demand mechani
 
 ### Parameter Summary
 
-- **TGE_total**: Total tokens available at the Token Generation Event.
-- **total_unlocked_history**: Time series data showing how many tokens unlock over time due to vesting.
-- **users**: User data used to compute average sell weight if a distribution is not provided.
-- **base_price**: Initial token price at TGE.
-- **elasticity**: Sensitivity of the token price to changes in supply.
-- **buyback_rate**: Fraction of unlocked tokens removed from circulation via buybacks.
-- **\(\alpha\)**: Weighting between circulating supply and effective supply.
-- **\(\mu\)**: Drift rate of the diffusion component (average return per time step).
-- **\(\sigma\)**: Volatility in the diffusion process.
-- **jump_intensity**: Likelihood (per time step) of a jump event occurring.
-- **jump_mean**: Average jump size (expressed as a fraction, e.g., -0.05 for a 5% drop).
-- **jump_std**: Standard deviation of the jump size.
-- **distribution**: Optional dictionary with keys ("small", "medium", "large", "sybil") summing to 100, used to compute the average sell weight.
+- $TGE_{total}$: Total tokens available at the Token Generation Event.
+- $total_{unlocked_{history}}$: Time series data showing how many tokens unlock over time due to vesting.
+- $users$: User data used to compute average sell weight if a distribution is not provided.
+- $base_{price}$: Initial token price at TGE.
+- $elasticity$: Sensitivity of the token price to changes in supply.
+- $buyback_{rate}$: Fraction of unlocked tokens removed from circulation via buybacks.
+- $\alpha$: Weighting between circulating supply and effective supply.
+- $\mu$: Drift rate of the diffusion component (average return per time step).
+- $\sigma$: Volatility in the diffusion process.
+- $jump_{intensity}$: Likelihood (per time step) of a jump event occurring.
+- $jump_{mean}$: Average jump size (expressed as a fraction, e.g., -0.05 for a 5% drop).
+- $jump_{std}$: Standard deviation of the jump size.
+- $distribution$: Optional dictionary with keys ("small", "medium", "large", "sybil") summing to 100, used to compute the average sell weight.
 
 ---
 
@@ -265,41 +265,41 @@ The airdrop policy takes a few forms, which we researched prior to writing this 
 - **Linear** ([Vertex Protocol on Token Unlocks](https://messari.io/project/vertex-protocol/token-unlocks)):
 
   $$
-  \text{tokens} = \text{factor} \times \text{airdrop\_points}
+  tokens = factor \times airdrop_{points}
   $$
 
 - **Exponential** ([Exponential Airdrop Models 2021](https://medium.com/@blockchaintokenomics/exponential-airdrop-models-2021)):
 
   $$
-  \text{tokens} = \text{factor} \times \Bigl(e^{\frac{\text{airdrop\_points}}{\text{scaling}}} - 1\Bigr)
+  tokens = factor \times \Bigl(e^{\frac{airdrop_{points}}{scaling}} - 1\Bigr)
   $$
 
 - **Tiered Constant** ([Tokenomics Lab on Airdrop Mechanisms](https://tokenomicslab.org/airdrop-mechanisms)):
 
   $$
-  \text{tokens} =
+  tokens =
   \begin{cases}
-  0.1, & \text{if } \text{airdrop\_points} < 0.2, \\
-  0.4, & \text{if } 0.2 \le \text{airdrop\_points} < 0.6, \\
-  1.0, & \text{if } \text{airdrop\_points} \ge 0.6.
+  0.1, & \text{if } airdrop_{points} < 0.2, \\
+  0.4, & \text{if } 0.2 \le airdrop_{points} < 0.6, \\
+  1.0, & \text{if } airdrop_{points} \ge 0.6.
   \end{cases}
   $$
 
 - **Tiered Linear** ([Consensys on Token Distribution Models](https://consensys.net/blog/blockchain-explained/token-distribution-models)):
 
   $$
-  \text{tokens} = 
+  tokens = 
   \begin{cases}
-  1.0 \times \text{airdrop\_points}, & \text{if } \text{airdrop\_points} \le 0.2, \\
-  0.2 \times 1.0 + 1.5 \times (\text{airdrop\_points} - 0.2), & \text{if } 0.2 < \text{airdrop\_points} \le 0.6, \\
-  0.2 \times 1.0 + 0.4 \times 1.5 + 2.0 \times (\text{airdrop\_points} - 0.6), & \text{if } \text{airdrop\_points} > 0.6.
+  1.0 \times airdrop_{points}, & \text{if } airdrop_{points} \le 0.2, \\
+  0.2 \times 1.0 + 1.5 \times (airdrop_{points} - 0.2), & \text{if } 0.2 < airdrop_{points} \le 0.6, \\
+  0.2 \times 1.0 + 0.4 \times 1.5 + 2.0 \times (airdrop_{points} - 0.6), & \text{if } airdrop_{points} > 0.6.
   \end{cases}
   $$
 
 - **Tiered Exponential** ([Crypto Economics Handbook on Token Distribution](https://www.cryptoeconomicshandbook.org/token-distribution)):
 
   $$
-  \text{tokens} = \sum_{\text{tiers}} \text{factor} \times \Bigl(e^{\frac{\Delta \text{airdrop\_points}}{\text{scaling}}} - 1\Bigr)
+  tokens = \sum_{tiers} factor \times \Bigl(e^{\frac{\Delta airdrop_{points}}{scaling}} - 1\Bigr)
   $$
 
 ---
@@ -321,10 +321,10 @@ This program runs the simulation with threads based on your computer's hardware 
 - **total_supply**: 100,000,000  
 - **preTGE_steps**: 50  
 - **simulation_horizon**: 60 (months)  
-- **base_price**: 10.0  
-- **buyback_rate**: 0.2 (20% of additional unlocked tokens are removed. Should be the same as or less than post-TGE token allocation to "Strategic Reserve/Treasury" for now.)  
-- **\(\alpha\)**: 0 (combined\_supply = \(\alpha \times\) circulating\_supply + (1 - \(\alpha\)) \(\times\) effective\_supply)  
-- **elasticity**: 1.0 (price(t) = base\_price \(\times\) (TGE\_total / combined\_supply(t))<sup>elasticity</sup>)
+- **base_{price}**: 10.0  
+- **buyback_{rate}**: 0.2 (20% of additional unlocked tokens are removed. Should be the same as or less than post-TGE token allocation to "Strategic Reserve/Treasury" for now.)  
+- $\alpha$: 0 (combined_{supply} = $\alpha \times circulating_{supply} + (1 - \alpha) \times effective_{supply}$)  
+- $elasticity$: 1.0 (price(t) = base_{price} $\times$ (TGE_{total} / combined_{supply}(t))^{elasticity}$)
 
 ---
 
