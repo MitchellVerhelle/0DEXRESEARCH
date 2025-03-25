@@ -29,34 +29,34 @@
 
 ##### Retention and active_user model:
 I model user retention as a differential‐equation model that factors in both a baseline activation/churn and an adjustment for token price (which proxies the opportunity cost)
-The proportion of active users \[ A(t) \] can be modeled like follows:
+The proportion of active users \( A(t) \) can be modeled like follows:
 \[
     \frac{dA}{dt}(t) = \alpha(N-A(t))-\beta A(t)
 \]
 where
-- \[ A(t) \] is the number of active users at time \[ t \],
-- \[ N \] is the total number of potential users, currently set to 10_000, but normalized to 1 as you'll read below,
-- \[ \alpha \] is the activation rate,
-- \[ \beta \] is the deactivation rate (churn rate).
+- \( A(t) \) is the number of active users at time \( t \),
+- \( N \) is the total number of potential users, currently set to 10_000, but normalized to 1 as you'll read below,
+- \( \alpha \) is the activation rate,
+- \( \beta \) is the deactivation rate (churn rate).
 
 Source: [Bass Diffusion Model](https://en.wikipedia.org/wiki/Bass_diffusion_model)
 
-I work with a normalized version of this model and extend it to incorporate the effect of opportunity cost, which I assume is directly related to the token price \[ p(t) \] on churn:
+I work with a normalized version of this model and extend it to incorporate the effect of opportunity cost, which I assume is directly related to the token price \( p(t) \) on churn:
 
 \[
     \frac{dA}{dt}(t) = \alpha(1-A(t))-\beta\left(1+\theta\frac{p(t)-p_0}{p_0}\right)A(t) + \sigma \eta(t)
 \]
 where
-- \[ A(t) \in [0,1] \] is the proportion of active users at time \[ t \],
-- \[ p(t) \] is the price at time \[ t \],
-- \[ p_0 \] is a "baseline" token price (like base price at TGE),
-- \[ \theta \] is a sensitivity parameter,
-- \[ \sigma \] scales random fluctuations,
-- \[ \eta(t) \] is a white-noise term.
+- \( A(t) \in [0,1] \) is the proportion of active users at time \( t \),
+- \( p(t) \) is the price at time \( t \),
+- \( p_0 \) is a "baseline" token price (like base price at TGE),
+- \( \theta \) is a sensitivity parameter,
+- \( \sigma \) scales random fluctuations,
+- \( \eta(t) \) is a white-noise term.
 
 Source: [Churn modeling in online services](https://www.sciencedirect.com/science/article/pii/S0167923606000470)
 
-I use Euler-Maruyama steps to discretize this equation in my code. \[ \epsilon_t \sim \mathcal{N}(0,\sigma dt) \]
+I use Euler-Maruyama steps to discretize this equation in my code. \( \epsilon_t \sim \mathcal{N}(0,\sigma dt) \)
 
 \[
     A_{t+1} = A_t + \left[\alpha(1-A_t) - \beta\left(1+\theta\frac{p(t)-p_0}{p_0}\right)A_t \right]dt + \epsilon_t
