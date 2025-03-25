@@ -34,7 +34,7 @@ The proportion of active users \( A(t) \) can be modeled like follows:
     \frac{dA}{dt}(t) = \alpha(N-A(t))-\beta A(t)
 \]
 where
-- $ A(t) $ is the number of active users at time \( t \),
+- \( A(t) \) is the number of active users at time \( t \),
 - \( N \) is the total number of potential users, currently set to 10_000, but normalized to 1 as you'll read below,
 - \( \alpha \) is the activation rate,
 - \( \beta \) is the deactivation rate (churn rate).
