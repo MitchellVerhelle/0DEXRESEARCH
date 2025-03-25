@@ -29,10 +29,12 @@ def run_simulation_for_combo(combo_name, num_users, total_supply, preTGE_steps, 
         preTGE_steps=preTGE_steps,
         simulation_horizon=simulation_horizon,
         airdrop_policy=ad_policy,
-        preTGE_rewards_policy=pre_policy
+        preTGE_rewards_policy=pre_policy,
+        airdrop_allocation_fraction=0.15,
+        initial_price=base_price
     )
-    TGE_total, months, total_unlocked_history, unlocked_history, dist = sim.run()
-    # Call dynamic price evolution; note: distribution parameter is passed last.
+    TGE_total, months, total_unlocked_history, unlocked_history, dist, active_fraction_history = sim.run()
+
     prices = simulate_price_evolution_dynamic(
         TGE_total, total_unlocked_history, sim.user_pool.users,
         base_price=base_price, elasticity=elasticity, buyback_rate=buyback_rate,
@@ -46,7 +48,8 @@ def run_simulation_for_combo(combo_name, num_users, total_supply, preTGE_steps, 
         "unlocked_history": unlocked_history,
         "prices": prices,
         "TGE_tokens": [user.tokens for user in sim.user_pool.users],
-        "distribution": dist
+        "distribution": dist,
+        "active_fraction_history": active_fraction_history
     }
 
 if __name__ == '__main__':
@@ -69,7 +72,7 @@ if __name__ == '__main__':
     ]
     
     # Simulation parameters.
-    num_users = 10_000
+    num_users = 10_000 # Total users possible in the pool (not all will be active immediately. See user_pool.py and simulation.py's simulate_postTGE().)
     total_supply = 100_000_000
     preTGE_steps = 50
     simulation_horizon = 60  # months
@@ -122,13 +125,22 @@ if __name__ == '__main__':
     chosen_result = results[chosen]
     
     plt.figure(figsize=(10, 6))
-    plt.plot(chosen_result["months"], chosen_result["total_unlocked_history"],
-             label=f"Total Unlocked Tokens ({chosen})", color='blue')
-    plt.xlabel("Months since TGE")
-    plt.ylabel("Total Unlocked Tokens")
-    plt.title("Post-TGE Vesting: Total Unlocked Tokens Over Time")
-    plt.legend()
-    plt.grid(True)
+    ax = plt.gca()
+
+    ax2 = ax.twinx()
+    ax2.bar(chosen_result["months"], chosen_result["active_fraction_history"],
+            color='grey', alpha=0.3, width=0.8, label="Active Fraction", zorder=0)
+    ax2.set_ylim(0, 1)
+    ax2.set_ylabel("Active Fraction", color='grey', fontsize=10)
+    ax2.tick_params(axis='y', labelcolor='grey')
+
+    ax.plot(chosen_result["months"], chosen_result["prices"],
+        marker='o', color='blue', label=f"Token Price ({chosen})", zorder=2)
+    ax.set_xlabel("Months since TGE")
+    ax.set_ylabel("Token Price (USD)", fontsize=10)
+    ax.set_title("Token Price Evolution with Active User Fraction", fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True)
     plt.show()
     
     plt.figure(figsize=(10, 6))

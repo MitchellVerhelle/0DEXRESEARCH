@@ -25,7 +25,7 @@ class ExponentialAirdropPolicy(AirdropPolicy):
     With airdrop_points in [0,1], use scaling=1 so that:
       - For 0, reward = 0;
       - For 1, reward = factor*(e^1 - 1) ~ factor*1.718.
-    You can adjust factor as needed.
+    Adjust factor as needed.
     """
     def __init__(self, factor=1.0, scaling=1.0):
         self.factor = factor

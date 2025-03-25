@@ -1,9 +1,7 @@
+import numpy as np
 import matplotlib.pyplot as plt
 
 def plot_price_evolution_grid(results, pre_labels, ad_labels, max_rows_per_fig=6):
-    import numpy as np
-    import matplotlib.pyplot as plt
-    
     nrows = len(pre_labels)
     ncols = len(ad_labels)
     
@@ -14,25 +12,36 @@ def plot_price_evolution_grid(results, pre_labels, ad_labels, max_rows_per_fig=6
         current_nrows = len(page)
         fig, axs = plt.subplots(current_nrows, ncols, 
                                 figsize=(3 * ncols, 2.5 * current_nrows), 
-                                sharex=True, sharey=True)
+                                sharex=True, sharey=False)
         if current_nrows == 1:
             axs = np.array([axs])
         for i, pre_name in enumerate(page):
             orig_i = pre_labels.index(pre_name)
             for j, ad_name in enumerate(ad_labels):
                 combo_name = f"{pre_name} + {ad_name}"
+                ax = axs[i, j]
                 if combo_name in results:
                     months = results[combo_name]["months"]
                     prices = results[combo_name]["prices"]
-                    axs[i, j].plot(months[1:], prices[1:], marker='o')
-                    axs[i, j].set_title(combo_name, fontsize=8)
+                    ax.plot(months[1:], prices[1:], marker='o', color='blue', zorder=2, label="Price")
+                    
+                    # If active_fraction_history is available, overlay it using a twin y-axis.
+                    if "active_fraction_history" in results[combo_name]:
+                        active_frac = results[combo_name]["active_fraction_history"]
+                        ax2 = ax.twinx()
+                        ax2.bar(months, active_frac, color='grey', alpha=0.3, width=0.8, zorder=0)
+                        ax2.set_ylim(0, 1)
+                        ax2.tick_params(axis='y', labelsize=6, colors='grey')
+                        ax2.set_ylabel("Active Fraction", fontsize=6, color='grey')
+                    
+                    ax.set_title(combo_name, fontsize=8)
                 else:
-                    axs[i, j].text(0.5, 0.5, "No data", horizontalalignment='center', verticalalignment='center')
+                    ax.text(0.5, 0.5, "No data", horizontalalignment='center', verticalalignment='center')
                 if i == current_nrows - 1:
-                    axs[i, j].set_xlabel("Months")
+                    ax.set_xlabel("Months", fontsize=8)
                 if j == 0:
-                    axs[i, j].set_ylabel("Price (USD)")
-                axs[i, j].grid(True)
+                    ax.set_ylabel("Price (USD)", fontsize=8)
+                ax.grid(True)
         fig.suptitle(f"Token Price Evolution (t > 0) - Page {page_index}", fontsize=14)
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.show()
@@ -51,9 +60,6 @@ def plot_airdrop_distribution_grid(results, pre_labels, ad_labels):
       - pre_labels: List of pre-TGE policy names.
       - ad_labels: List of airdrop policy names.
     """
-    import numpy as np
-    import matplotlib.pyplot as plt
-
     nrows = len(pre_labels)
     ncols = len(ad_labels)
     fig, axs = plt.subplots(nrows, ncols, figsize=(3 * ncols, 2.5 * nrows),

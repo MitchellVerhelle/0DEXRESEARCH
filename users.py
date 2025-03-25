@@ -14,6 +14,16 @@ class User(ABC):
         self.tokens = 0.0
         self.active = True
 
+    def update_airdrop_points(self, dt):
+        """
+        Simulate "farming" for airdrop points
+        Crypto airdrops: An evolutionary approach by Darcy W. E. Allen (2024)
+        """
+        delta_points = (self.interaction_rate * (self.endowment - self.airdrop_points) - self.decay_rate * self.airdrop_points) * dt
+        self.airdrop_points += delta_points
+        if self.airdrop_points < 0:
+            self.airdrop_points = 0
+
     @abstractmethod
     def step(self, phase):
         """
@@ -23,41 +33,33 @@ class User(ABC):
         pass
 
 class RegularUser(User):
-    """
-    Represents a non-sybil user with varying interaction rates based on user size.
-    """
     def __init__(self, wealth, user_id, user_size, airdrop_policy=None):
         super().__init__(wealth, user_id, airdrop_policy)
         self.user_size = user_size
+        self.decay_rate = 0.1
 
-        # Set interaction rate based on user size
         if user_size == 'small':
             self.interaction_rate = np.random.poisson(lam=1)
+            self.endowment = np.random.poisson(lam=1)
         elif user_size == 'medium':
             self.interaction_rate = np.random.poisson(lam=3)
+            self.endowment = np.random.poisson(lam=3)
         elif user_size == 'large':
             self.interaction_rate = np.random.poisson(lam=5)
+            self.endowment = np.random.poisson(lam=5)
         else:
             self.interaction_rate = 1
+            self.endowment = 1
+        
+        self.endowment += 0.1 #initial baseline endowment for users.
 
     def step(self, phase):
         if phase == 'PreTGE':
-            # Simulate "farming" for airdrop points
-            delta = self.interaction_rate * np.random.uniform(0.5, 1.5)
-            self.airdrop_points += delta
+            self.update_airdrop_points(dt=1)
         elif phase == 'TGE':
-            # Assign tokens based on accumulated airdrop points
             self.tokens = self.airdrop_policy.calculate_tokens(self.airdrop_points, self)
         elif phase == 'PostTGE':
-            # Decide if user remains active based on size
-            if self.user_size == 'small':
-                prob_stay = 0.4
-            elif self.user_size == 'medium':
-                prob_stay = 0.7
-            elif self.user_size == 'large':
-                prob_stay = 0.9
-            else:
-                prob_stay = 0.5
+            prob_stay = {'small': 0.4, 'medium': 0.7, 'large': 0.9}.get(self.user_size, 0.5)
             self.active = (np.random.rand() < prob_stay)
 
 class SybilUser(User):
@@ -67,11 +69,12 @@ class SybilUser(User):
     def __init__(self, wealth, user_id, airdrop_policy=None):
         super().__init__(wealth, user_id, airdrop_policy)
         self.interaction_rate = np.random.poisson(lam=0.5)
+        self.endowment = np.random.poisson(lam=0.5)
+        self.decay_rate = 0.1 # Consider changing this for SybilUsers
 
     def step(self, phase):
         if phase == 'PreTGE':
-            delta = self.interaction_rate * np.random.uniform(0.5, 1.0)
-            self.airdrop_points += delta
+            self.update_airdrop_points(dt=1)
         elif phase == 'TGE':
             self.tokens = self.airdrop_policy.calculate_tokens(self.airdrop_points, self)
         elif phase == 'PostTGE':

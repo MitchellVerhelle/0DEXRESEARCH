@@ -8,7 +8,8 @@ from users import RegularUser, SybilUser
 
 class MonteCarloSimulation:
     def __init__(self, num_users=1500000, total_supply=100_000_000, preTGE_steps=100, simulation_horizon=60,
-                 airdrop_policy=None, preTGE_rewards_policy=None, airdrop_allocation_fraction=0.15):
+                 airdrop_policy=None, preTGE_rewards_policy=None, airdrop_allocation_fraction=0.15,
+                 initial_price=10.0):
         """
         Parameters:
           - num_users: Total number of simulated users.
@@ -17,6 +18,7 @@ class MonteCarloSimulation:
           - simulation_horizon: Number of months to simulate post-TGE vesting.
           - airdrop_policy: An instance of an airdrop conversion policy (defaults to Linear).
           - preTGE_rewards_policy: An instance of a pre-TGE rewards policy to compute user airdrop points.
+          - initial_price: The projected initial price (pre-TGE constant price).
         """
         self.num_users = num_users
         self.total_supply = total_supply
@@ -24,6 +26,7 @@ class MonteCarloSimulation:
         self.simulation_horizon = simulation_horizon  # in months
         self.airdrop_policy = airdrop_policy if airdrop_policy is not None else LinearAirdropPolicy()
         self.preTGE_rewards_policy = preTGE_rewards_policy
+        self.initial_price = initial_price
         
         self.user_pool = UserPool(num_users=self.num_users, airdrop_policy=self.airdrop_policy)
         self.post_tge_manager = PostTGERewardsManager(total_supply=self.total_supply)
@@ -44,43 +47,35 @@ class MonteCarloSimulation:
             for user in self.user_pool.users:
                 if hasattr(user, 'user_size'):
                     if user.user_size == 'small':
-                        trading_volume = np.random.uniform(100, 1000)
-                        maker_volume = np.random.uniform(0.3, 0.7) * trading_volume
-                        taker_volume = trading_volume - maker_volume
-                        stats = {
-                            'trading_volume': trading_volume,
-                            'maker_volume': maker_volume,
-                            'taker_volume': taker_volume,
-                            'qscore': np.random.uniform(50, 150),
-                            'referral_points': np.random.uniform(0, 50)
-                        }
+                        volume_multiplier = 50   # For example, trading volume = endowment * 50
+                        qscore_range = (50, 150)
+                        referral_range = (0, 50)
                     elif user.user_size == 'medium':
-                        trading_volume = np.random.uniform(1000, 10000)
-                        maker_volume = np.random.uniform(0.3, 0.7) * trading_volume
-                        taker_volume = trading_volume - maker_volume
-                        stats = {
-                            'trading_volume': trading_volume,
-                            'maker_volume': maker_volume,
-                            'taker_volume': taker_volume,
-                            'qscore': np.random.uniform(100, 200),
-                            'referral_points': np.random.uniform(0, 100)
-                        }
+                        volume_multiplier = 150  # trading volume = endowment * 150
+                        qscore_range = (100, 200)
+                        referral_range = (0, 100)
                     elif user.user_size == 'large':
-                        trading_volume = np.random.uniform(10000, 100000)
-                        maker_volume = np.random.uniform(0.3, 0.7) * trading_volume
-                        taker_volume = trading_volume - maker_volume
-                        stats = {
-                            'trading_volume': trading_volume,
-                            'maker_volume': maker_volume,
-                            'taker_volume': taker_volume,
-                            'qscore': np.random.uniform(150, 300),
-                            'referral_points': np.random.uniform(0, 150)
-                        }
+                        volume_multiplier = 300  # trading volume = endowment * 300
+                        qscore_range = (150, 300)
+                        referral_range = (0, 150)
                     else:
-                        trading_volume = np.random.uniform(1000, 5000)
-                        stats = {'trading_volume': trading_volume}
+                        volume_multiplier = 100
+                        qscore_range = (100, 200)
+                        referral_range = (0, 100)
+                
+                    trading_volume = user.endowment * volume_multiplier
+                    maker_volume = trading_volume * np.random.uniform(0.3, 0.7)
+                    taker_volume = trading_volume - maker_volume
+                    
+                    stats = {
+                        'trading_volume': trading_volume,
+                        'maker_volume': maker_volume,
+                        'taker_volume': taker_volume,
+                        'qscore': np.random.uniform(*qscore_range),
+                        'referral_points': np.random.uniform(*referral_range)
+                    }
                 else:
-                    trading_volume = np.random.uniform(50, 500)
+                    trading_volume = user.endowment * 100
                     stats = {'trading_volume': trading_volume}
                 
                 user.airdrop_points += self.preTGE_rewards_policy.calculate_points(stats, user)
@@ -95,24 +90,66 @@ class MonteCarloSimulation:
         """At TGE, convert accumulated airdrop points to tokens."""
         self.user_pool.step_all('TGE')
     
-    def simulate_postTGE(self):
+    def simulate_postTGE(self, prices):
         """
-        Simulate post-TGE vesting.
+        Simulate post-TGE vesting with dynamic user retention.
+        This method uses a differential equation with a stochastic term to update the global fraction
+        of active regular users over time based on token price and opportunity cost.
+        
+        Parameters:
+          - prices: Array of token prices per month (length = simulation_horizon+1).
+          
         Returns:
           - months: Array of months since TGE.
           - total_unlocked_history: List of total tokens unlocked over time.
           - unlocked_history: Dict mapping each allocation group to its unlocked tokens over time.
+          - active_fraction_history: List of the active fraction per month.
         """
         months = np.arange(0, self.simulation_horizon + 1)
         total_unlocked_history = []
         unlocked_history = {group: [] for group in self.post_tge_manager.schedules.keys()}
-        for month in months:
+        
+        # Initialize active fraction (e.g., 10% of regular users are active at TGE)
+        active_fraction = 0.1  
+        active_fraction_history = [active_fraction]
+        
+        # Parameters for the differential equation (per month)
+        alpha = 0.1    # Activation rate
+        beta = 0.01    # Base churn rate
+        theta = 0.85    # Price sensitivity parameter
+        p0 = 10.0      # Reference token price (e.g., base_price at TGE)
+        sigma_de = 0.01  # Noise magnitude
+        dt = 1  # time step (1 month)
+        
+        for idx, month in enumerate(months):
+            # Update vesting schedule at this month
             allocations = self.post_tge_manager.get_unlocked_allocations(month)
             total_unlocked = sum(allocations.values())
             total_unlocked_history.append(total_unlocked)
             for group, tokens in allocations.items():
                 unlocked_history[group].append(tokens)
-        return months, total_unlocked_history, unlocked_history
+            
+            # Update active fraction using the differential equation (Euler–Maruyama method)
+            if idx < len(months) - 1:
+                # Use the simulated token price for the current month; if prices array is provided, use it.
+                p_t = prices[idx] if prices is not None and idx < len(prices) else self.initial_price
+                dA_dt = alpha * (1 - active_fraction) - beta * (1 + theta * ((p_t - p0) / p0)) * active_fraction
+                noise = np.random.normal(0, sigma_de)
+                active_fraction = active_fraction + (dA_dt + noise) * dt
+                active_fraction = max(0.0, min(1.0, active_fraction))  # Ensure it stays in [0, 1]
+                active_fraction_history.append(active_fraction)
+            
+            # Update each regular user's active flag based on the current global active fraction.
+            for user in self.user_pool.users:
+                if isinstance(user, RegularUser):
+                    user.active = (np.random.rand() < active_fraction)
+                elif isinstance(user, SybilUser):
+                    user.active = False  # Sybil users exit post-TGE
+            
+            # Allow users to perform their post-TGE step (if any additional behavior is modeled)
+            self.user_pool.step_all('PostTGE')
+        
+        return months, total_unlocked_history, unlocked_history, active_fraction_history
 
     def run(self):
         print("=== Running Pre-TGE Simulation ===")
@@ -157,11 +194,12 @@ class MonteCarloSimulation:
 
         print("Distribution by user type (percent):", distribution)
     
-        print("=== Running Post-TGE Simulation ===")
-        months, total_unlocked_history, unlocked_history = self.simulate_postTGE()
+        print("=== Running Post-TGE Simulation with Dynamic User Retention ===")
+        constant_prices = np.full(self.simulation_horizon + 1, self.initial_price)
+        months, total_unlocked_history, unlocked_history, active_fraction_history = self.simulate_postTGE(constant_prices)
         print("Post-TGE simulation complete.")
         
-        return scaled_TGE_total, months, total_unlocked_history, unlocked_history, distribution
+        return scaled_TGE_total, months, total_unlocked_history, unlocked_history, distribution, active_fraction_history
 
 def compute_token_price(TGE_total, total_unlocked_history, users, 
                         base_price=10.0, elasticity=1.0, buyback_rate=0.2, alpha=0.5,

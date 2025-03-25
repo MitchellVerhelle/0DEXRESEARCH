@@ -17,18 +17,16 @@ class UserPool:
         num_sybil = int(self.num_users * sybil_percentage)
         num_regular = self.num_users - num_sybil
 
-        # Distribute regular user sizes
         small_percentage = 0.6
         medium_percentage = 0.3
         large_percentage = 0.1
-
+        
         num_small = int(num_regular * small_percentage)
         num_medium = int(num_regular * medium_percentage)
         num_large = num_regular - num_small - num_medium
 
         user_id = 0
-
-        # Generate wealth for regular users
+        
         wealth_small = np.random.lognormal(mean=6, sigma=1.5, size=num_small)
         wealth_medium = np.random.lognormal(mean=7, sigma=1.2, size=num_medium)
         wealth_large = np.random.lognormal(mean=8, sigma=1.0, size=num_large)
@@ -42,7 +40,7 @@ class UserPool:
         for w in wealth_large:
             self.users.append(RegularUser(w, user_id, 'large', self.airdrop_policy))
             user_id += 1
-
+        
         # Generate wealth for sybil users
         wealth_sybil = np.random.lognormal(mean=5, sigma=1.0, size=num_sybil)
         for w in wealth_sybil:
