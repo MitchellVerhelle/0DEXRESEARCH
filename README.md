@@ -1,334 +1,233 @@
 # DEX RESEARCH
 
-#### We're researching the optimal pre-TGE rewards program, TGE airdrop policy, and post-TGE rewards program to maximize long-term token growth while minimizing chances of token value depreciation.
+#### We're researching the optimal pre-TGE rewards program, TGE airdrop policy, and post-TGE rewards program to maximize long-term token growth while minimizing token value depreciation.
 
-### The model is 3 stages:
+### The Model: 3 Stages
+
 - **Pre TGE**
 - **Airdrop Event**
 - **Post TGE**
 
-##### We assume that the program has only one large genesis airdrop event.
+_We assume the program has one large genesis airdrop event._
 
 ---
 
-## user.py
+## New Files Overview
 
-##### Users are currently split into two subcategories:
-- **RegularUser**
-- **SybilUser**
+### activity_stats.py
 
-##### Sybils will create multiple accounts, do little pre-TGE farming, and have minimal interaction with the platform before eventually selling their tokens post-Airdrop. We want to minimize tokens that go to Sybils.
+This module encapsulates the logic for generating user activity statistics based on their attributes. For a **RegularUser**, it computes:
+- **trading_volume**:  
+  $$\text{trading\_volume} = \text{endowment} \times \text{volume\_multiplier}$$
+- **maker_volume** and **taker_volume**: Derived from trading volume by splitting randomly (e.g., 30%–70% for maker orders).
+- **qscore**: A random quality score in a range that depends on user size.
+- **referral_points**: A random value in a range that depends on user size.
 
-##### RegularUsers are users who may or may not interact with the site. Unlike Sybils, RegularUsers don't create accounts with the sole purpose of leaving; instead, they will leave if they no longer see value in staying. We aim to maximize RegularUser engagement.
+For users without a defined `user_size`, a default trading volume is returned.
 
-##### Design choice:  
-I've used a simple differential equation to model RegularUser engagement pre-TGE for farming reward points. This model abstracts away the difficulties of modeling how exactly users gain rewards. First I assume RegularUsers are subject to 3 main sub-categories: "small", "medium", and "large". These refer to the user's capital. Small users have less capital so they will naturally interact less frequently with the testnet or dApps to farm tokens. Medium users have a medium amount of capital, and large users a large amount. The point is to differentiate how users interact with the site.
-
-For **SybilUser**, the endowment is low with a lambda parameter of 0.5 (e.g. [Airdrop Vulnerabilities Explained](https://blog.goodaudience.com/how-airdrops-can-be-sybil-attacked-8721480f3e5e)) whereas for **RegularUser** the endowment depends on user size:  
-- Small: lambda = 1  
-- Medium: lambda = 3  
-- Large: lambda = 5  
-
-All are modeled as Poisson random variables to represent that some users sometimes have larger endowments or smaller endowments depending on their respective lambdas.
+_Source: Assumptions based on Vertex and dYdX pre-TGE incentive designs (e.g., [Mirror.xyz](https://mirror.xyz/vertexprotocol.eth) and [Cointelegraph](https://cointelegraph.com/news/dydx-airdrop-how-to-claim-310-to-9529-dydx-for-free))._
 
 ---
 
-## user_pool.py
+### vesting.py
 
-A **UserPool** refers to the population of users. Backed by research, I split users into Sybil or Regular based on the estimated proportion of sybil wallet accounts, which is surprisingly high at 30%. All sybil users are assumed to be small, so they have a small Poisson parameter for determining their wealth. I've also found that for RegularUsers, 10% are "large", 30% "medium", and 60% "small". This allows me to generate a model population from which I initialize user wealth values.
+This file defines the vesting schedules and the **PostTGERewardsManager** class. It sets the unlocking parameters (allocation, cliffs, linear unlock durations) for each stakeholder group. For example, a typical team vesting schedule might unlock 20% at TGE, then impose a 12‑month lockup, followed by a 36‑month linear unlock.
 
-Backed by research, user wealth is assumed to follow a log-normal distribution, from which I use the following distributions:
-- **Small:** LogNormal(6, 1.5)
-- **Medium:** LogNormal(7, 1.2)
-- **Large:** LogNormal(8, 1.0)
+_Parameter sources include common vesting guidelines from [Messari](https://messari.io/asset/unlock-schedules) and [Solana documentation](https://docs.solana.com/economics)._
 
-For **SybilUsers**, I generate from LogNormal(5, 1.0), since I am assuming that their accounts are proportionately smaller as they will clearly have less time to interact with testnet/dApps, on average.
+---
 
-### Retention and Active User Model
+### postTGE_rewards_policy.py
 
-I model user retention as a differential‐equation model that factors in both a baseline activation/churn and an adjustment for token price (which proxies the opportunity cost). The proportion of active users, $A(t)$, can be modeled as follows:
+This module defines post-TGE reward policies that apply engagement multipliers to users’ token rewards after TGE. For example, the **EngagementMultiplierPolicy** uses:
 
 $$
-\frac{dA}{dt}(t) = \alpha \, (N - A(t)) - \beta \, A(t)
+\text{multiplier} = 1 + \gamma \left(\frac{\text{active\_days}}{T}\right)^\delta
 $$
 
 where:
-- $A(t)$ is the number of active users at time $t$,
-- $N$ is the total number of potential users (currently set to 10,000, but normalized to 1 as you'll read below),
-- $\alpha$ is the activation rate,
-- $\beta$ is the deactivation rate (churn rate).
+- \(\gamma\) is the maximum additional multiplier (e.g., \(\gamma = 0.5\) implies full activity yields a 1.5× multiplier),
+- \(T\) is the simulation horizon (in months),
+- \(\delta\) is an exponent that emphasizes consistency (values \(>1\) accentuate differences).
 
-Source: [Bass Diffusion Model](https://en.wikipedia.org/wiki/Bass_diffusion_model)
+The **GenericPostTGERewardPolicy** applies this multiplier to a user's token balance.
 
-I work with a normalized version of this model and extend it to incorporate the effect of opportunity cost, which I assume is directly related to the token price $p(t)$ on churn:
-
-$$
-\frac{dA}{dt}(t) = \alpha \, (1 - A(t)) - \beta \left(1 + \theta \, \frac{p(t) - p_0}{p_0}\right) A(t) + \sigma \, \eta(t)
-$$
-
-where:
-- $A(t) \in [0,1]$ is the proportion of active users at time $t$,
-- $p(t)$ is the price at time $t$,
-- $p_0$ is a "baseline" token price (like the base price at TGE),
-- $\theta$ is a sensitivity parameter,
-- $\sigma$ scales random fluctuations,
-- $\eta(t)$ is a white-noise term.
-
-Source: [Churn modeling in online services](https://www.sciencedirect.com/science/article/pii/S0167923606000470)
-
-I use Euler-Maruyama steps to discretize this equation in my code. $\epsilon_t \sim \mathcal{N}(0,\sigma \, dt)$:
-
-$$
-A_{t+1} = A_t + \left[\alpha (1-A_t) - \beta \left(1+\theta\, \frac{p(t)-p_0}{p_0}\right) A_t \right] dt + \epsilon_t
-$$
+_Source: Inspired by Vertex’s VoVertex system ([Vertex Docs](https://vertexprotocol.com/docs/trade-and-earn)) and general DEX incentive designs._
 
 ---
 
-## simulation.py
+### Price Calculation Changes
 
-**simulation.py** runs in 3 main stages, as discussed above: Pre-TGE, TGE, and Post-TGE.
+Price evolution now proceeds in discrete steps. At each time step \(t\):
 
-From **UserPool**, I run a `stepall` function which steps each user in the user pool to interact (or not) with the testnet.
+1. **Baseline Supply/Demand Price** is computed as:
 
-### Assumptions
+   $$
+   price(t) = base_{price} \times \left(\frac{TGE_{total}}{combined_{supply}(t)}\right)^{elasticity}
+   $$
 
-#### Pre-TGE
-- Larger users are more likely to interact with the testnet in larger proportion if the reward policy favors larger users. Larger users contributing to the platform is beneficial for both parties, but could be harmful if the large user decides to leave, so not too much wealth should be allocated to large users.
-- Time steps are in months, to stay consistent with Forgd, which uses mostly monthly vesting schedules.
-- Users interact based on a differential equation which specifies some potential, an amount users are willing to spend, a rate of loss $\delta$ representing opportunity cost, and an interaction\_factor which represents how frequently the user will contribute to the platform. Larger users have larger endowments and interaction\_factors, but also higher opportunity costs since they will want larger rewards.
-- Trading volume is estimated monthly for each user size/type.
-- Users are rewarded points depending on each **preTGE_rewards.py** policy.
+   where
 
-#### TGE
-- Users are rewarded tokens depending on each airdrop policy.
+   $$
+   combined_{supply}(t) = \alpha \times circulating_{supply}(t) + (1-\alpha) \times effective_{supply}(t)
+   $$
 
-The following airdrop policies have been researched prior to writing this file:
+   with
 
-- **dYdX Retroactive (Tiered Fixed Reward) Policy**  
-  Based on total trading volume (in USD), a fixed reward (points) is assigned. For example:
-  - volume < 1,000 USD  ⇒ 310 points (base deposit bonus)
-  - 1,000 ≤ volume < 10,000 USD  ⇒ 1,163 points
-  - 10,000 ≤ volume < 100,000 USD  ⇒ 2,500 points
-  - 100,000 ≤ volume < 1,000,000 USD  ⇒ 6,414 points
-  - volume ≥ 1,000,000 USD  ⇒ 9,530 points
+   $$
+   circulating_{supply}(t) = TGE_{total} + \left(postTGE_{unlocked}(t)-postTGE_{unlocked}(0)\right) \times avg_{sell\_weight}
+   $$
+   $$
+   effective_{supply}(t) = TGE_{total} + \left(postTGE_{unlocked}(t)-postTGE_{unlocked}(0)\right) \times \left(avg_{sell\_weight} \times (1 - buyback_{rate})\right)
+   $$
 
-- **Vertex Maker/Taker Reward Policy**  
-  Users earn points based on:
-  - Maker volume weighted at 37.5%
-  - Taker volume weighted at 37.5%
-  - A Q-score (liquidity quality) weighted at 25%
-  
-  Additionally, a referral bonus (e.g., 25% of the referees’ points) is added.
+2. **Dynamic Price Evolution** is modeled with a jump-diffusion process:
 
-- **Jupiter Volume Tier Reward Policy**  
-  Implements a tiered, piecewise constant reward system based on swap volume. For example:
-  - volume ≥ 1,000 USD  ⇒ 50 points
-  - volume ≥ 29,000 USD  ⇒ 250 points
-  - volume ≥ 500,000 USD  ⇒ 3,000 points
-  - volume ≥ 3,000,000 USD  ⇒ 10,000 points
-  - volume ≥ 14,000,000 USD  ⇒ 20,000 points
+   - **Diffusion Component (GBM):**
+     
+     $$
+     P_{diff}(t) = \exp\left(\left(\mu - \frac{1}{2}\sigma^2\right)\Delta t + \sigma \sqrt{\Delta t}\, Z_t\right), \quad Z_t \sim N(0,1)
+     $$
+     
+   - **Jump Component:**
 
-- **Aevo Boosted Volume Reward Policy**  
-  Applies a base boost (scaling from 1× up to a maximum boost based on trailing volume) and a probabilistic “lucky boost” to each trade. Default lucky boost probabilities might be:
-  - 10× boost with 10% chance
-  - 50× boost with 2.5% chance
-  - 100× boost with 1% chance
+     $$
+     J_t = 
+     \begin{cases}
+     1 + jump_{size}, & \text{with probability } jump_{intensity} \Delta t, \\
+     1, & \text{otherwise},
+     \end{cases}
+     $$
+     
+     where \(jump_{size} \sim N(jump_{mean}, jump_{std})\).
 
-- **Helix (Injective) Loyalty Points Reward Policy**  
-  Rewards users based on:
-  - Trading volume (weighted linearly)
-  - Diversity bonus (number of unique markets traded)
-  - Loyalty bonus (active days multiplied by volume)
+   - **Dynamic Multiplier:**
 
-- **Game-like (MMR) Reward Policy**  
-  Uses a game-like system inspired by Match-Making Rating (MMR), where rewards are determined by:
-  - A base number of points
-  - Bonus points proportional to the win rate (wins vs. losses)
-  - Additional bonus for consistency (consecutive days of activity)
+     $$
+     P_{jump}(t) = P_{jump}(t-1) \times P_{diff}(t) \times J_t,\quad P_{jump}(0)=1
+     $$
 
-- **Custom / Generic Reward Policy**  
-  A flexible reward policy that accepts a custom function.
+3. **Final Token Price:**
 
----
+   $$
+   Final\ Price(t) = price(t) \times P_{jump}(t)
+   $$
 
-### Price
-
-Price starts at a constant value. [Forgd](https://app.forgd.com/academy/how-to-guides/build-tokenomics-and-protocol-value-flows/determining-your-valuation) does a good job explaining why these dynamics exist (venture backing, no community trading yet, investments, hype, ethos, etc. all contribute to pre-TGE price). [This site called multiversx](https://multiversx.com/blog/maiar-dex-listings-price-discovery) gives reasonable parameter initialization for pre-TGE price at about \$0.20–\$1.00 USD.
-
-Then price starts evolving at TGE (time 0). We model price as follows:
-
-#### 1. Baseline Supply/Demand Price
-
-The baseline price at time $t$ is given by:
+In addition, at each time step the active user fraction \(A(t)\) is updated via:
 
 $$
-price(t) = base_{price} \times \left(\frac{TGE_{total}}{combined_{supply}(t)}\right)^{elasticity}
+A_{t+1} = A_t + \left[\alpha (1-A_t) - \beta \left(1+\theta\frac{p(t)-p_0}{p_0}\right)A_t\right] dt + \epsilon_t,
 $$
 
-where:
-- $TGE_{total}$: The fixed token amount distributed at the Token Generation Event (TGE).  
-- $base_{price}$: The initial token price at TGE.  
-- $elasticity$: A parameter representing how sensitive the token price is to changes in supply. A higher elasticity means that a small change in supply results in a larger change in price.  
-- $combined_{supply}(t)$: A weighted combination of the circulating and effective supply at time $t$, defined as:
+with \(\epsilon_t \sim N(0,\sigma_{de}\, dt)\).
 
-$$
-combined_{supply}(t) = \alpha \times circulating_{supply}(t) + (1 - \alpha) \times effective_{supply}(t)
-$$
-
-  - $circulating_{supply}(t)$ is calculated as:
-
-    $$ 
-    circulating_{supply}(t) = TGE_{total} + \left(postTGE_{unlocked}(t) - postTGE_{unlocked}(0)\right) \times avg_{sell_{weight}}
-    $$
-
-  - $effective_{supply}(t)$, adjusted for tokens removed from circulation (e.g., via buybacks), is computed as:
-
-    $$
-    effective_{supply}(t) = TGE_{total} + \left(postTGE_{unlocked}(t) - postTGE_{unlocked}(0)\right) \times \left(avg_{sell_{weight}} \times (1 - buyback_{rate})\right)
-    $$
-
-- $avg_{sell_{weight}}$: The average fraction of unlocked tokens that enter the market as sell orders. This can be computed from user data or provided via a distribution.  
-- $buyback_{rate}$: The fraction of unlocked tokens effectively removed from circulation through buybacks or burns.  
-- $\alpha$: A weighting parameter between the raw circulating supply and the effective supply.
-
-This supply/demand model operates under the idea that as more tokens become available (via vesting), the price adjusts inversely. ([Investopedia on Supply and Demand](https://www.investopedia.com/terms/s/supply-demand.asp)).
-
-#### 2. Dynamic Price Evolution (Jump-Diffusion Process)
-
-To capture market volatility and sudden shocks, a jump-diffusion process is applied. The dynamic multiplier $P_{jump}(t)$ is defined recursively:
-
-- At TGE (time 0):
-
-$$
-P_{jump}(0) = 1.0
-$$
-
-- For $t \ge 1$:
-
-$$
-P_{jump}(t) = P_{jump}(t-1) \times \exp\Bigl((\mu - 0.5\sigma^2)\Delta t + \sigma \sqrt{\Delta t} \, Z_t\Bigr) \times J_t
-$$
-
-where:
-- $\mu$: The drift rate, representing the average return per time unit.  
-- $\sigma$: The volatility parameter, indicating the randomness in price movements.  
-- $\Delta t$: The time step (e.g., one month).  
-- $Z_t$: A random variable drawn from a standard normal distribution ($Z_t \sim N(0,1)$).  
-- $J_t$: The jump component, defined as:
-
-$$
-J_t = 
-\begin{cases}
-1 + jump_{size}, & \text{with probability } jump_{intensity} \times \Delta t, \\
-1, & \text{otherwise},
-\end{cases}
-$$
-
-where $jump_{size}$ is drawn from a normal distribution with mean $jump_{mean}$ and standard deviation $jump_{std}$.
-
-The jump-diffusion process combines a geometric Brownian motion ([Investopedia on Geometric Brownian Motion](https://www.investopedia.com/terms/g/geometric-brownian-motion.asp)) with a jump component that captures abrupt market events ([ScienceDirect on Jump-Diffusion Models](https://www.sciencedirect.com/topics/engineering/jump-diffusion)). I chose to abstract away more sophisticated market dynamics because I assumed it would suffice for the goal of discovering optimal PreTGE/TGE/PostTGE policies. However, it could make for an interesting extension to consider more advanced frameworks for price evolution depending on assumptions about user behavior.
-
-#### 3. Final Token Price
-
-The final simulated token price at time $t$ is:
-
-$$
-Final\ Price(t) = price(t) \times P_{jump}(t)
-$$
-
-This means the price is determined by both the fundamental supply/demand mechanics and the stochastic jump-diffusion dynamics.
-
----
-
-### Parameter Summary
-
-- $TGE_{total}$: Total tokens available at the Token Generation Event.
-- $total_{unlocked_{history}}$: Time series data showing how many tokens unlock over time due to vesting.
-- $users$: User data used to compute average sell weight if a distribution is not provided.
-- $base_{price}$: Initial token price at TGE.
-- $elasticity$: Sensitivity of the token price to changes in supply.
-- $buyback_{rate}$: Fraction of unlocked tokens removed from circulation via buybacks.
-- $\alpha$: Weighting between circulating supply and effective supply.
-- $\mu$: Drift rate of the diffusion component (average return per time step).
-- $\sigma$: Volatility in the diffusion process.
-- $jump_{intensity}$: Likelihood (per time step) of a jump event occurring.
-- $jump_{mean}$: Average jump size (expressed as a fraction, e.g., -0.05 for a 5% drop).
-- $jump_{std}$: Standard deviation of the jump size.
-- $distribution$: Optional dictionary with keys ("small", "medium", "large", "sybil") summing to 100, used to compute the average sell weight.
+_Sources: [Investopedia: Geometric Brownian Motion](https://www.investopedia.com/terms/g/geometric-brownian-motion.asp) and [ScienceDirect: Jump Diffusion](https://www.sciencedirect.com/topics/engineering/jump-diffusion)._
 
 ---
 
 ## airdrop_policy.py
 
-The airdrop policy takes a few forms, which we researched prior to writing this file:
+The airdrop policies include:
 
-- **Linear** ([Vertex Protocol on Token Unlocks](https://messari.io/project/vertex-protocol/token-unlocks)):
+- **Linear**  
+  $$ tokens = factor \times airdrop_{points} $$
+  ([Vertex Protocol](https://messari.io/project/vertex-protocol/token-unlocks))
 
-  $$
-  tokens = factor \times airdrop_{points}
-  $$
+- **Exponential**  
+  $$ tokens = factor \times \left(e^{\frac{airdrop_{points}}{scaling}} - 1\right) $$
+  ([Exponential Airdrop Models 2021](https://medium.com/@blockchaintokenomics/exponential-airdrop-models-2021))
 
-- **Exponential** ([Exponential Airdrop Models 2021](https://medium.com/@blockchaintokenomics/exponential-airdrop-models-2021)):
-
-  $$
-  tokens = factor \times \Bigl(e^{\frac{airdrop_{points}}{scaling}} - 1\Bigr)
-  $$
-
-- **Tiered Constant** ([Tokenomics Lab on Airdrop Mechanisms](https://tokenomicslab.org/airdrop-mechanisms)):
-
+- **Tiered Constant**  
   $$
   tokens =
   \begin{cases}
-  0.1, & \text{if } airdrop_{points} < 0.2, \\
-  0.4, & \text{if } 0.2 \le airdrop_{points} < 0.6, \\
-  1.0, & \text{if } airdrop_{points} \ge 0.6.
+  0.1, & airdrop_{points} < 0.2 \\
+  0.4, & 0.2 \le airdrop_{points} < 0.6 \\
+  1.0, & airdrop_{points} \ge 0.6
   \end{cases}
   $$
+  ([Tokenomics Lab](https://tokenomicslab.org/airdrop-mechanisms))
 
-- **Tiered Linear** ([Consensys on Token Distribution Models](https://consensys.net/blog/blockchain-explained/token-distribution-models)):
-
+- **Tiered Linear**  
   $$
   tokens = 
   \begin{cases}
-  1.0 \times airdrop_{points}, & \text{if } airdrop_{points} \le 0.2, \\
-  0.2 \times 1.0 + 1.5 \times (airdrop_{points} - 0.2), & \text{if } 0.2 < airdrop_{points} \le 0.6, \\
-  0.2 \times 1.0 + 0.4 \times 1.5 + 2.0 \times (airdrop_{points} - 0.6), & \text{if } airdrop_{points} > 0.6.
+  1.0 \times airdrop_{points}, & airdrop_{points} \le 0.2 \\
+  1.0 \times 0.2 + 1.5 \times (airdrop_{points}-0.2), & 0.2 < airdrop_{points} \le 0.6 \\
+  1.0 \times 0.2 + 1.5 \times 0.4 + 2.0 \times (airdrop_{points}-0.6), & airdrop_{points} > 0.6
   \end{cases}
   $$
+  ([Consensys](https://consensys.net/blog/blockchain-explained/token-distribution-models))
 
-- **Tiered Exponential** ([Crypto Economics Handbook on Token Distribution](https://www.cryptoeconomicshandbook.org/token-distribution)):
-
-  $$
-  tokens = \sum_{tiers} factor \times \Bigl(e^{\frac{\Delta airdrop_{points}}{scaling}} - 1\Bigr)
-  $$
-
----
-
-## postTGE-rewards.py
-
-This file currently just specifies the vesting schedules, cliffs, unlocks, and allocation percentages to each group. We were assuming constraints on non-community endowments, leaving about 45% of the allocation to the community. We decided on this schedule and use the 20% in treasury/strategic reserve for demand drivers like token buybacks, as well as 5% to long-term rewards. The main purpose in terms of modeling here is to influence demand for the token during times of high expected sell-pressure to stabilize token price.
-
-There are plans to incorporate more advanced post-TGE rewards plans and integrate them into the user step behaviors. Currently, users interact with the post-TGE trading based on the vesting period unlock schedule.
+- **Tiered Exponential**  
+  $$ tokens = \sum_{tiers} factor \times \left(e^{\frac{\Delta airdrop_{points}}{scaling}} - 1\right) $$
+  ([Crypto Economics Handbook](https://www.cryptoeconomicshandbook.org/token-distribution))
 
 ---
 
-## main.py
+## preTGE_rewards.py
 
-This program runs the simulation with threads based on your computer's hardware capabilities.
+The preTGE rewards policies remain largely as before for dYdX Retro, Vertex Maker/Taker, Jupiter Volume Tier, and Aevo Farm Boost. We have removed the standalone Helix and Game-like MMR policies and now incorporate Game-like MMR as our custom, generic reward policy using **GenericPreTGERewardPolicy**.
 
-### Parameters
-- **num_users**: 10,000 (This is the whole user-pool number of users. It could be made into a process in UserPool for "active" users).
-- **total_supply**: 100,000,000  
-- **preTGE_steps**: 50  
-- **simulation_horizon**: 60 (months)  
-- **base_{price}**: 10.0  
-- **buyback_{rate}**: 0.2 (20% of additional unlocked tokens are removed. Should be the same as or less than post-TGE token allocation to "Strategic Reserve/Treasury" for now.)  
-- $\alpha$: 0 (combined_{supply} = $\alpha \times circulating_{supply} + (1 - \alpha) \times effective_{supply}$)  
-- $elasticity$: 1.0 (price(t) = base_{price} $\times$ (TGE_{total} / combined_{supply}(t))^{elasticity}$)
+_Source: Discussion on crypto forums (e.g., [dYdX Community](https://forum.dydx.community)) and earlier research._
 
 ---
 
-### Instructions
+## postTGE_rewards.py & postTGE_rewards_policy.py
 
-- **To run, enter `python main.py` in the root directory. Then wait for the program to run. As you see the graphs, click 'x' to see the next graph until the program finishes running. Save each graph at the bottom if you'd like.**
-- **Modify parameters in main.py.**
+In **postTGE_rewards.py**, we now simulate price evolution step-by-step. At each time step \(t\):
+1. The baseline price is computed from vesting (using the supply/demand model).
+2. A jump-diffusion process updates the dynamic multiplier:
+   $$
+   P_{jump}(t) = P_{jump}(t-1) \times \exp\left(\left(\mu - \frac{1}{2}\sigma^2\right)\Delta t + \sigma \sqrt{\Delta t}\, Z_t\right) \times J_t
+   $$
+   where
+   $$
+   J_t =
+   \begin{cases}
+   1 + jump_{size}, & \text{with probability } jump_{intensity}\Delta t, \\
+   1, & \text{otherwise},
+   \end{cases}
+   $$
+   with \(jump_{size} \sim N(jump_{mean}, jump_{std})\).
+3. User activity is updated via a retention model:
+   $$
+   A_{t+1} = A_t + \left[\alpha (1-A_t) - \beta \left(1+\theta\frac{p(t)-p_0}{p_0}\right)A_t\right] dt + \epsilon_t,
+   $$
+   with \(\epsilon_t \sim N(0,\sigma_{de}\, dt)\).
+
+In **postTGE_rewards_policy.py**, the **GenericPostTGERewardPolicy** applies an engagement multiplier to user tokens:
+
+$$
+\text{multiplier} = 1 + \gamma \left(\frac{\text{active\_days}}{T}\right)^\delta,
+$$
+
+where \(\gamma\) and \(\delta\) are user-defined parameters.  
+_Source: [Vertex Docs](https://vertexprotocol.com/docs/trade-and-earn) and general DEX incentive research._
+
+---
+
+## Plotting Overview
+
+The following plots are produced:
+- **Histogram of TGE Token Distribution:**  
+  Displays the distribution of TGE tokens for each pre-TGE and airdrop policy combination (ignoring post-TGE variations).
+  
+- **Vesting Schedule Plot:**  
+  Shows a stackplot of unlocked tokens per group over time, with a dashed line overlay representing the total unlocked tokens.
+
+- **Price Evolution Overlay Grid:**  
+  For each pre-TGE + airdrop combination, all post-TGE price evolution curves (Baseline, High Volatility, Low Volatility, Aggressive Buyback) are overlayed on a single subplot. Grey bars indicate the Baseline active fraction over time. The grid layout is user-definable via maximum rows and columns per page.
+
+---
+
+## Instructions to Run
+
+- To run the simulation, enter `python main.py` in the root directory.
+- Adjust simulation parameters in **main.py** as needed.
+- Graphs will appear sequentially; close each graph window to see the next.
+- Save graphs as desired.
+
+---
+
+_This README.md provides a concise overview of the new file structure, price evolution model, and updated reward policies with supporting mathematical descriptions and citations. Replace your current README.md with the content above to integrate these changes._
