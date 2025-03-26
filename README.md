@@ -17,225 +17,192 @@ _We assume the program has one large genesis airdrop event._
 ### activity_stats.py
 
 This module encapsulates the logic for generating user activity statistics based on their attributes. For a **RegularUser**, it computes:
-- **trading_volume**:  
-  \[
-  \text{trading\_volume} = \text{endowment} \times \text{volume\_multiplier}
-  \]
-- **maker_volume** and **taker_volume**: Derived from trading volume by splitting randomly (e.g., 30\%–70\% for maker orders).
-- **qscore**: A random quality score in a range that depends on user size.
-- **referral_points**: A random value in a range that depends on user size.
 
-For users without a defined `user_size`, a default trading volume is returned.
+$$
+\text{trading\_volume} = \text{endowment} \times \text{volume\_multiplier}
+$$
 
-_Source: Assumptions based on Vertex and dYdX pre-TGE incentive designs (e.g., [Mirror.xyz](https://mirror.xyz/vertexprotocol.eth) and [Cointelegraph](https://cointelegraph.com/news/dydx-airdrop-how-to-claim-310-to-9529-dydx-for-free))._
+Maker and taker volumes are split randomly (for example, 30%–70%) from `trading_volume`. A random `qscore` depends on user size, and a random `referral_points` depends on user size.  
+If a user lacks a defined `user_size`, a default volume is returned.
+
+_Source: Assumptions based on Vertex and dYdX pre-TGE incentive designs ([Mirror.xyz](https://mirror.xyz/vertexprotocol.eth) and [Cointelegraph](https://cointelegraph.com/news/dydx-airdrop-how-to-claim-310-to-9529-dydx-for-free))._
 
 ---
 
 ### vesting.py
 
-This file defines the vesting schedules and the **PostTGERewardsManager** class. It sets the unlocking parameters (allocation, cliffs, linear unlock durations) for each stakeholder group. For example, a typical team vesting schedule might unlock 20\% at TGE, then impose a 12‑month lockup, followed by a 36‑month linear unlock.
+Defines vesting schedules and the **PostTGERewardsManager**. Each group’s tokens are subject to lockups, cliffs, and linear unlocks. For instance, a typical team allocation might unlock 20% at TGE, lock for 12 months, then linear‐unlock over 36 months.
 
-_Parameter sources include common vesting guidelines from [Messari](https://messari.io/asset/unlock-schedules) and [Solana documentation](https://docs.solana.com/economics)._
+_Sources: [Messari](https://messari.io/asset/unlock-schedules) and [Solana docs](https://docs.solana.com/economics)._
 
 ---
 
 ### postTGE_rewards_policy.py
 
-This module defines post-TGE reward policies that apply engagement multipliers to users’ token rewards after TGE. For example, the **EngagementMultiplierPolicy** uses:
+Contains post-TGE engagement reward policies. For instance, **EngagementMultiplierPolicy** applies:
 
-\[
+$$
 \text{multiplier} = 1 + \gamma \left(\frac{\text{active\_days}}{T}\right)^\delta
-\]
+$$
 
-where:
-- \(\gamma\) is the maximum additional multiplier (e.g., \(\gamma = 0.5\) implies full activity yields a 1.5× multiplier),
-- \(T\) is the simulation horizon (in months),
-- \(\delta\) is an exponent that emphasizes consistency (values \(>1\) accentuate differences).
+- $\gamma$ = max additional multiplier (e.g. 0.5 → full activity yields 1.5×),
+- $T$ = simulation horizon (months),
+- $\delta$ = exponent emphasizing consistency ($>1$ accentuates differences).
 
-The **GenericPostTGERewardPolicy** applies this multiplier to a user's token balance.
+**GenericPostTGERewardPolicy** applies this multiplier to a user's token balance.
 
-_Source: Inspired by Vertex’s VoVertex system ([Vertex Docs](https://vertexprotocol.com/docs/trade-and-earn)) and general DEX incentive designs._
+_Sources: Vertex’s VoVertex ([Vertex Docs](https://vertexprotocol.com/docs/trade-and-earn)) & general DEX incentives._
 
 ---
 
 ## Price Calculation Changes
 
-Price evolution now proceeds in discrete steps. At each time step \(t\):
+We now step through time. Each step $t$:
 
-1. **Baseline Supply/Demand Price** is computed as:
+1. **Baseline Supply/Demand Price**:
 
-   \[
-   price(t) = base_{price} \times \left(\frac{TGE_{total}}{combined_{supply}(t)}\right)^{elasticity}
-   \]
+$$
+\text{price}(t) = \text{base\_price} \times \Bigl(\frac{\text{TGE\_total}}{\text{combined\_supply}(t)}\Bigr)^\text{elasticity}
+$$
 
-   where
+with
 
-   \[
-   combined_{supply}(t) = \alpha \times circulating_{supply}(t) + (1-\alpha) \times effective_{supply}(t)
-   \]
+$$
+\text{combined\_supply}(t) = \alpha \times \text{circulating\_supply}(t) \;+\; (1-\alpha)\,\text{effective\_supply}(t)
+$$
 
-   with
+and
 
-   \[
-   circulating_{supply}(t) = TGE_{total} + \left(postTGE_{unlocked}(t)-postTGE_{unlocked}(0)\right) \times avg_{sell\_weight}
-   \]
-   \[
-   effective_{supply}(t) = TGE_{total} + \left(postTGE_{unlocked}(t)-postTGE_{unlocked}(0)\right) \times \left(avg_{sell\_weight} \times (1 - buyback_{rate})\right)
-   \]
+$$
+\text{circulating\_supply}(t) = \text{TGE\_total} + \bigl(\text{postTGE\_unlocked}(t)-\text{postTGE\_unlocked}(0)\bigr)\times\text{avg\_sell\_weight},
+$$
 
-2. **Dynamic Price Evolution** is modeled with a jump-diffusion process:
+$$
+\text{effective\_supply}(t) = \text{TGE\_total} + \bigl(\text{postTGE\_unlocked}(t)-\text{postTGE\_unlocked}(0)\bigr)\times\bigl(\text{avg\_sell\_weight}\times(1-\text{buyback\_rate})\bigr).
+$$
 
-   - **Diffusion Component (GBM):**
-     
-     \[
-     P_{diff}(t) = \exp\left(\left(\mu - \frac{1}{2}\sigma^2\right)\Delta t + \sigma \sqrt{\Delta t}\, Z_t\right), \quad Z_t \sim N(0,1)
-     \]
-     
-   - **Jump Component:**
+2. **Dynamic Price Evolution** uses a jump-diffusion process:
 
-     \[
-     J_t = 
-     \begin{cases}
-     1 + jump_{size}, & \text{with probability } jump_{intensity}\Delta t, \\
-     1, & \text{otherwise},
-     \end{cases}
-     \]
-     
-     where \(jump_{size} \sim N(jump_{mean}, jump_{std})\).
+- **Diffusion (GBM)**:
+  
+  $$
+  P_{\text{diff}}(t) = \exp\Bigl((\mu-\tfrac{1}{2}\sigma^2)\,\Delta t \;+\;\sigma\sqrt{\Delta t}\,Z_t\Bigr),\quad Z_t\sim N(0,1).
+  $$
 
-   - **Dynamic Multiplier:**
+- **Jump**:
+  
+  $$
+  J_t =
+  \begin{cases}
+  1 + \text{jump\_size}, & \text{with prob } (\text{jump\_intensity}\times\Delta t),\\
+  1, & \text{otherwise}.
+  \end{cases}
+  $$
 
-     \[
-     P_{jump}(t) = P_{jump}(t-1) \times P_{diff}(t) \times J_t,\quad P_{jump}(0)=1
-     \]
+  $\text{jump\_size} \sim N(\text{jump\_mean}, \text{jump\_std})$.
 
-3. **Final Token Price:**
+- **Dynamic Multiplier**:
+  
+  $$
+  P_{\text{jump}}(t) = P_{\text{jump}}(t-1) \times P_{\text{diff}}(t)\times J_t,\quad P_{\text{jump}}(0)=1.
+  $$
 
-   \[
-   Final\ Price(t) = price(t) \times P_{jump}(t)
-   \]
+3. **Final Token Price**:
 
-Additionally, at each time step the active user fraction \(A(t)\) is updated via:
+$$
+\text{Final\_Price}(t) = \text{price}(t)\times P_{\text{jump}}(t).
+$$
 
-\[
-A_{t+1} = A_t + \left[\alpha (1-A_t) - \beta \left(1+\theta\frac{p(t)-p_0}{p_0}\right)A_t\right] dt + \epsilon_t,
-\]
-with \(\epsilon_t \sim N(0,\sigma_{de}\, dt)\).
+Meanwhile, user retention $A(t)$ updates each step:
 
-_Sources: [Investopedia: Geometric Brownian Motion](https://www.investopedia.com/terms/g/geometric-brownian-motion.asp) and [ScienceDirect: Jump Diffusion Models](https://www.sciencedirect.com/topics/engineering/jump-diffusion)._
+$$
+A_{t+1} = A_{t} + \Bigl[\alpha (1-A_{t}) \;-\;\beta\Bigl(1+\theta\,\frac{p(t)-p_0}{p_0}\Bigr)A_{t}\Bigr]\Delta t \;+\;\epsilon_t,
+$$
+
+where $\epsilon_t\sim N(0,\sigma_{de}\,\Delta t)$.
+
+_Sources: [Investopedia (GBM)](https://www.investopedia.com/terms/g/geometric-brownian-motion.asp), [ScienceDirect (Jump Diffusion)](https://www.sciencedirect.com/topics/engineering/jump-diffusion)._
 
 ---
 
 ## airdrop_policy.py
 
-The airdrop policies include:
+We support:
 
 - **Linear**  
-  \[
-  tokens = factor \times airdrop_{points}
-  \]
-  ([Vertex Protocol](https://messari.io/project/vertex-protocol/token-unlocks))
+  $$\text{tokens} = \text{factor}\times \text{airdrop\_points}$$
 
 - **Exponential**  
-  \[
-  tokens = factor \times \left(e^{\frac{airdrop_{points}}{scaling}} - 1\right)
-  \]
-  ([Exponential Airdrop Models 2021](https://medium.com/@blockchaintokenomics/exponential-airdrop-models-2021))
+  $$\text{tokens} = \text{factor}\times\Bigl(e^\frac{\text{airdrop\_points}}{\text{scaling}} -1\Bigr)$$
 
 - **Tiered Constant**  
   \[
-  tokens =
+  \text{tokens}=
   \begin{cases}
-  0.1, & \text{if } airdrop_{points} < 0.2, \\
-  0.4, & \text{if } 0.2 \le airdrop_{points} < 0.6, \\
-  1.0, & \text{if } airdrop_{points} \ge 0.6.
+  0.1,\; & \text{if } \text{airdrop\_points}<0.2\\
+  0.4,\; & \text{if } 0.2\le \text{airdrop\_points}<0.6\\
+  1.0,\; & \text{if } \text{airdrop\_points}\ge0.6
   \end{cases}
   \]
-  ([Tokenomics Lab](https://tokenomicslab.org/airdrop-mechanisms))
 
 - **Tiered Linear**  
   \[
-  tokens = 
+  \text{tokens} = 
   \begin{cases}
-  1.0 \times airdrop_{points}, & \text{if } airdrop_{points} \le 0.2, \\
-  1.0 \times 0.2 + 1.5 \times \left(airdrop_{points}-0.2\right), & \text{if } 0.2 < airdrop_{points} \le 0.6, \\
-  1.0 \times 0.2 + 1.5 \times 0.4 + 2.0 \times \left(airdrop_{points}-0.6\right), & \text{if } airdrop_{points} > 0.6.
+  1.0\times \text{airdrop\_points}, & \text{if } \text{airdrop\_points}\le 0.2\\
+  1.0\times 0.2 + 1.5\times(\text{airdrop\_points}-0.2), & \text{if } 0.2<\text{airdrop\_points}\le 0.6\\
+  1.0\times 0.2 + 1.5\times 0.4 + 2.0\times(\text{airdrop\_points}-0.6), & \text{if } \text{airdrop\_points}>0.6
   \end{cases}
   \]
-  ([Consensys](https://consensys.net/blog/blockchain-explained/token-distribution-models))
 
 - **Tiered Exponential**  
-  \[
-  tokens = \sum_{tiers} factor \times \left(e^{\frac{\Delta airdrop_{points}}{scaling}} - 1\right)
-  \]
-  ([Crypto Economics Handbook](https://www.cryptoeconomicshandbook.org/token-distribution))
+  $$\text{tokens} = \sum_{\text{tiers}} \text{factor}\times\Bigl(e^{\frac{\Delta \text{airdrop\_points}}{\text{scaling}}}-1\Bigr)$$
+
+_References: Vertex’s [Token Unlocks](https://messari.io/project/vertex-protocol/token-unlocks), [Crypto Economics Handbook](https://www.cryptoeconomicshandbook.org/token-distribution)._
 
 ---
 
 ## preTGE_rewards.py
 
-The preTGE rewards policies remain largely as before for:
-- **dYdX Retro Tiered Reward Policy**
-- **Vertex Maker/Taker Reward Policy**
-- **Jupiter Volume Tier Reward Policy**
-- **Aevo Farm Boost Reward Policy**
+- **dYdX Retro**  
+- **Vertex Maker/Taker**  
+- **Jupiter Volume Tier**  
+- **Aevo Farm Boost**  
 
-We have removed the standalone Helix and Game-like MMR rewards and now incorporate Game-like MMR as our custom, generic reward policy via **GenericPreTGERewardPolicy**.
-
-_Source: Discussions on crypto forums (e.g., [dYdX Community](https://forum.dydx.community)) and earlier research._
+We removed Helix and MMR standalones; **Game MMR** is now part of **GenericPreTGERewardPolicy** as our custom approach (see earlier references: [dYdX Community](https://forum.dydx.community)).
 
 ---
 
 ## postTGE_rewards.py & postTGE_rewards_policy.py
 
-**postTGE_rewards.py** now simulates the price evolution step-by-step. At each time step \(t\):
-1. The baseline price is computed from the vesting schedule.
-2. The dynamic multiplier is updated using a jump-diffusion process:
-   \[
-   P_{jump}(t) = P_{jump}(t-1) \times \exp\left(\left(\mu - \frac{1}{2}\sigma^2\right)\Delta t + \sigma \sqrt{\Delta t}\, Z_t\right) \times J_t
-   \]
-   where
-   \[
-   J_t = 
-   \begin{cases}
-   1 + jump_{size}, & \text{with probability } jump_{intensity}\Delta t, \\
-   1, & \text{otherwise},
-   \end{cases}
-   \]
-   and \(jump_{size} \sim N(jump_{mean}, jump_{std})\).
-3. User activity is updated via a retention model that feeds back into the price update.
+**postTGE_rewards.py** simulates vesting + price evolution in monthly steps. Each month:
+1. Compute baseline price from supply/demand (see vesting).
+2. Apply jump-diffusion multiplier.
+3. Retention: update $A(t)$, the fraction of active users, feeding back into next step’s price.
 
-**postTGE_rewards_policy.py** defines the **GenericPostTGERewardPolicy**, which applies an engagement multiplier to user token rewards post-TGE using:
+**postTGE_rewards_policy.py** implements the engagement multiplier:
+
 \[
-\text{multiplier} = 1 + \gamma \left(\frac{\text{active\_days}}{T}\right)^\delta
+\text{multiplier} = 1 + \gamma\Bigl(\frac{\text{active\_days}}{T}\Bigr)^\delta
 \]
-where \(\gamma\) and \(\delta\) are parameters.
 
-_Sources: [Investopedia: Geometric Brownian Motion](https://www.investopedia.com/terms/g/geometric-brownian-motion.asp), [ScienceDirect: Jump Diffusion Models](https://www.sciencedirect.com/topics/engineering/jump-diffusion), and [Vertex Docs](https://vertexprotocol.com/docs/trade-and-earn)._
+where \(\gamma,\delta\) are user-defined parameters.
+
+_Sources: [GBM references from Investopedia](https://www.investopedia.com/terms/g/geometric-brownian-motion.asp), [Jump Diffusion from ScienceDirect](https://www.sciencedirect.com/topics/engineering/jump-diffusion), [Vertex Docs](https://vertexprotocol.com/docs/trade-and-earn)._
 
 ---
 
 ## Plotting Overview
 
-The following plots are produced:
-- **Histogram of TGE Token Distribution:**  
-  Displays the distribution of TGE tokens for each pre-TGE and airdrop policy combination.
-  
-- **Vesting Schedule Plot:**  
-  Shows a stackplot of unlocked tokens per group over time with a dashed line representing total unlocked tokens.
-  
-- **Price Evolution Overlay Grid:**  
-  For each pre-TGE + airdrop combination, the price evolution curves for all post-TGE configurations (Baseline, High Volatility, Low Volatility, Aggressive Buyback) are overlayed on a single subplot with a legend. Grey bars represent the Baseline active fraction. The grid layout is user-definable with maximum rows and columns per page.
+- **Histogram of TGE Token Distribution**: Plots TGE tokens for each pre-TGE & airdrop combo.  
+- **Vesting Schedule Plot**: Stackplot of unlocked tokens by group + dashed line for total unlocked.  
+- **Price Evolution Overlay Grid**: For each pre-TGE + airdrop combo, we overlay post-TGE price curves (Baseline, High Vol, Low Vol, Agg. Buyback). Grey bars show Baseline’s active fraction. Grid layout is customizable (rows × columns).
 
 ---
 
 ## Instructions to Run
 
-- To run the simulation, enter `python main.py` in the root directory.
-- Adjust simulation parameters in **main.py** as needed.
-- Graphs will appear sequentially; close each graph window to see the next.
-- Save graphs as desired.
-
----
-
-This README.md provides a concise overview of the new file structure, updated price calculation, revised reward policies (including our custom Game-like MMR), and the plotting outputs. Replace your current README.md with the content above to integrate these changes.
+- `python main.py` from the root directory.
+- Modify simulation params in **main.py** (like user count, supply, or jump intensities).
+- Close each plot window to see the next.
+- Save plots as you like.
