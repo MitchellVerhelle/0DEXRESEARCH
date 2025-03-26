@@ -330,7 +330,5 @@ This program runs the simulation with threads based on your computer's hardware 
 
 ### Instructions
 
-- **To run, enter `python main.py` in the root directory. Then wait for the program to run. As you see the graphs, click 'x' to see the next graph until the program finishes running. Save each graph as desired.**
+- **To run, enter `python main.py` in the root directory. Then wait for the program to run. As you see the graphs, click 'x' to see the next graph until the program finishes running. Save each graph at the bottom if you'd like.**
 - **Modify parameters in main.py.**
-- **Current parameters:** (as listed above)
-- **If it gives an error, try removing the threads or setting the thread-count manually to 2 in main.py. If errors persist, ensure your Python environment is up to date.
