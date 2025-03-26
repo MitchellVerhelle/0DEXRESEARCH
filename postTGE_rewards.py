@@ -1,142 +1,109 @@
 import numpy as np
 
-class VestingSchedule:
+class PostTGERewardsSimulator:
     """
-    Represents a vesting schedule for a token allocation.
+    Simulator for post-TGE token price evolution using a supply/demand model
+    combined with a jump-diffusion process.
+
+    The baseline price at time t is given by:
+      price(t) = base_price * (TGE_total / combined_supply(t))**elasticity
+
+    where:
+      - TGE_total: The token allocation at TGE (e.g., airdrop allocation).
+      - combined_supply(t) is a weighted average of:
+          circulating_supply(t) = TGE_total + (postTGE_unlocked(t) - postTGE_unlocked(0)) * avg_sell_weight,
+          effective_supply(t) = TGE_total + (postTGE_unlocked(t) - postTGE_unlocked(0)) * (avg_sell_weight*(1 - buyback_rate))
+          with combined_supply = alpha * circulating_supply + (1 - alpha) * effective_supply.
     
-    Parameters:
-      - allocation: The total allocation for this group (absolute tokens or fraction of total supply).
-      - unlock_at_tge: Fraction unlocked at TGE.
-      - lockup_duration: Duration (in months) during which no additional tokens unlock beyond TGE.
-      - initial_cliff_unlock: Fraction unlocked at the initial cliff after lockup.
-      - unlock_duration: Duration (in months) over which the remaining tokens unlock linearly.
-      - initial_cliff_delay: For groups with no lockup duration, the delay (in months) before the initial cliff unlock.
-                           Defaults to 0 if lockup_duration > 0.
+    Then a dynamic multiplier is applied via a jump-diffusion process:
+      - Diffusion (GBM component):
+          multiplier = exp((mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z),  where Z ~ N(0,1)
+      - Jump component:
+          With probability (jump_intensity * dt), a jump occurs:
+            jump = 1 + N(jump_mean, jump_std)
+          Otherwise, jump = 1.
+
+    Final price: price(t) = baseline_price(t) * cumulative_multiplier(t)
+
+    Parameter estimates:
+      - base_price: 10.0 (reference token price at TGE) [Source: Vertex docs & common practice]
+      - elasticity: 1.0 [Assumed; see economic models in crypto]
+      - buyback_rate: 0.2 (20% removal of unlocked tokens) [Assumed]
+      - alpha: 0.5 (equal weighting) [Assumed]
+      - mu: 0.0 (neutral drift)
+      - sigma: 0.05 (monthly volatility, e.g., from Investopedia's GBM discussions)
+      - jump_intensity: 0.1 per month [Assumed based on empirical data]
+      - jump_mean: -0.05 (average 5% drop when jump occurs)
+      - jump_std: 0.1 [Assumed variability]
+      - distribution: A dict with keys "small", "medium", "large", "sybil" that sum to 100,
+                      representing the user token distribution percentages.
+                      (Used to compute avg_sell_weight)
+
+    Sources:
+      - Geometric Brownian Motion: https://www.investopedia.com/terms/g/geometric-brownian-motion.asp
+      - Jump-Diffusion Models: https://www.sciencedirect.com/topics/engineering/jump-diffusion
     """
-    def __init__(self, allocation, unlock_at_tge, lockup_duration, initial_cliff_unlock, unlock_duration, initial_cliff_delay=0):
-        self.allocation = allocation
-        self.unlock_at_tge = unlock_at_tge
-        self.lockup_duration = lockup_duration
-        self.initial_cliff_unlock = initial_cliff_unlock
-        self.unlock_duration = unlock_duration
-        self.initial_cliff_delay = initial_cliff_delay
+    def __init__(self, TGE_total, total_unlocked_history, users, base_price=10.0, elasticity=1.0,
+                 buyback_rate=0.2, alpha=0.5, mu=0.0, sigma=0.05, jump_intensity=0.1,
+                 jump_mean=-0.05, jump_std=0.1, distribution=None):
+        self.TGE_total = TGE_total
+        self.total_unlocked_history = np.array(total_unlocked_history)
+        self.users = users
+        self.base_price = base_price
+        self.elasticity = elasticity
+        self.buyback_rate = buyback_rate
+        self.alpha = alpha
+        self.mu = mu
+        self.sigma = sigma
+        self.jump_intensity = jump_intensity
+        self.jump_mean = jump_mean
+        self.jump_std = jump_std
+        self.distribution = distribution
 
-    def get_unlocked_fraction(self, months_elapsed):
+    def compute_token_price(self):
         """
-        Returns the fraction of allocation unlocked at a given time (in months since TGE).
-        """
-        if months_elapsed < 0:
-            return 0.0
+        Compute the baseline supply/demand price based on unlocked tokens.
 
-        # For groups with a lockup period.
-        if self.lockup_duration > 0:
-            if months_elapsed < self.lockup_duration:
-                return self.unlock_at_tge
-            elif months_elapsed < self.lockup_duration + self.unlock_duration:
-                linear_progress = (months_elapsed - self.lockup_duration) / self.unlock_duration
-                return self.unlock_at_tge + self.initial_cliff_unlock + (1.0 - self.unlock_at_tge - self.initial_cliff_unlock) * linear_progress
-            else:
-                return 1.0
+        If distribution is provided, compute avg_sell_weight as:
+          avg_sell_weight = (small*1.0 + medium*0.8 + large*0.3 + sybil*1.0) / 100
+        Otherwise, defaults to 1.0.
+        """
+        total_unlocked = self.total_unlocked_history
+        initial_unlocked = total_unlocked[0]
+        
+        if self.distribution is not None:
+            avg_sell_weight = (
+                self.distribution.get("small", 0) * 1.0 +
+                self.distribution.get("medium", 0) * 0.8 +
+                self.distribution.get("large", 0) * 0.3 +
+                self.distribution.get("sybil", 0) * 1.0
+            ) / 100.0
         else:
-            # For groups with no lockup, use initial cliff delay.
-            if months_elapsed < self.initial_cliff_delay:
-                return self.unlock_at_tge
-            elif months_elapsed < self.initial_cliff_delay + self.unlock_duration:
-                linear_progress = (months_elapsed - self.initial_cliff_delay) / self.unlock_duration
-                return self.unlock_at_tge + self.initial_cliff_unlock + (1.0 - self.unlock_at_tge - self.initial_cliff_unlock) * linear_progress
+            avg_sell_weight = 1.0
+        
+        circulating_supply = self.TGE_total + (total_unlocked - initial_unlocked) * avg_sell_weight
+        effective_supply = self.TGE_total + (total_unlocked - initial_unlocked) * (avg_sell_weight * (1 - self.buyback_rate))
+        effective_supply = np.maximum(effective_supply, 1)
+        combined_supply = self.alpha * circulating_supply + (1 - self.alpha) * effective_supply
+        
+        baseline_prices = self.base_price * (self.TGE_total / combined_supply) ** self.elasticity
+        return baseline_prices
+
+    def simulate_price_evolution(self, dt=1):
+        """
+        Simulate dynamic token price evolution using a jump-diffusion process.
+        Returns an array of simulated prices over the simulation horizon.
+        """
+        n = len(self.total_unlocked_history)
+        baseline_prices = self.compute_token_price()
+        P_jump = np.zeros(n)
+        P_jump[0] = 1.0
+        for t in range(1, n):
+            diffusion = np.exp((self.mu - 0.5 * self.sigma**2) * dt + self.sigma * np.sqrt(dt) * np.random.randn())
+            if np.random.rand() < self.jump_intensity * dt:
+                jump = 1.0 + np.random.normal(self.jump_mean, self.jump_std)
             else:
-                return 1.0
-
-    def get_unlocked_tokens(self, months_elapsed):
-        """
-        Returns the absolute number of tokens unlocked given the time elapsed (in months since TGE).
-        """
-        fraction = self.get_unlocked_fraction(months_elapsed)
-        return self.allocation * fraction
-
-class PostTGERewardsManager:
-    """
-    Manages vesting schedules for all allocation groups.
-    """
-    def __init__(self, total_supply):
-        self.total_supply = total_supply
-        self.schedules = {
-            "Team": VestingSchedule(
-                allocation=total_supply * 0.20,
-                unlock_at_tge=0.20,
-                lockup_duration=12,
-                initial_cliff_unlock=0.20,
-                unlock_duration=36
-            ),
-            "TGE Airdrop": VestingSchedule(
-                allocation=total_supply * 0.15,
-                unlock_at_tge=1.0,
-                lockup_duration=0,
-                initial_cliff_unlock=0.0,
-                unlock_duration=0
-            ),
-            "Future Investors": VestingSchedule(
-                allocation=total_supply * 0.17,
-                unlock_at_tge=0.0,
-                lockup_duration=0,
-                initial_cliff_unlock=0.0,
-                unlock_duration=48
-            ),
-            "Strategic Reserve/Treasury": VestingSchedule(
-                allocation=total_supply * 0.20,
-                unlock_at_tge=0.0,
-                lockup_duration=0,
-                initial_cliff_unlock=0.0,
-                unlock_duration=48
-            ),
-            "Investors": VestingSchedule(
-                allocation=total_supply * 0.08,
-                unlock_at_tge=0.20,
-                lockup_duration=0,
-                initial_cliff_unlock=0.20,
-                unlock_duration=36,
-                initial_cliff_delay=1
-            ),
-            "Rewards": VestingSchedule(
-                allocation=total_supply * 0.05,
-                unlock_at_tge=1.0,
-                lockup_duration=0,
-                initial_cliff_unlock=0.0,
-                unlock_duration=0
-            ),
-            "Promotion": VestingSchedule(
-                allocation=total_supply * 0.03,
-                unlock_at_tge=0.20,
-                lockup_duration=0,
-                initial_cliff_unlock=0.20,
-                unlock_duration=24,
-                initial_cliff_delay=1
-            ),
-            "Advisors": VestingSchedule(
-                allocation=total_supply * 0.02,
-                unlock_at_tge=0.20,
-                lockup_duration=12,
-                initial_cliff_unlock=0.20,
-                unlock_duration=36
-            )
-        }
-
-    def get_unlocked_allocations(self, months_elapsed):
-        """
-        Returns a dictionary mapping each group to the absolute number of tokens unlocked at the given time.
-        """
-        unlocked = {}
-        for group, schedule in self.schedules.items():
-            unlocked[group] = schedule.get_unlocked_tokens(months_elapsed)
-        return unlocked
-
-if __name__ == '__main__':
-    total_supply = 100_000_000  # e.g., 100 million tokens
-    manager = PostTGERewardsManager(total_supply)
-    
-    for month in [0, 6, 12, 18, 24, 36, 48, 60]:
-        unlocked_allocations = manager.get_unlocked_allocations(month)
-        print(f"At {month} months:")
-        for group, tokens in unlocked_allocations.items():
-            print(f"  {group}: {tokens:.0f} tokens")
-        print()
+                jump = 1.0
+            P_jump[t] = P_jump[t-1] * diffusion * jump
+        prices = baseline_prices * P_jump
+        return prices

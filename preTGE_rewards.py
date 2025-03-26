@@ -25,8 +25,23 @@ class DydxRetroTieredRewardPolicy(PreTGERewardsPolicy):
       - 10,000 <= volume < 100,000 USD  => 2,500 points
       - 100,000 <= volume < 1,000,000 USD  => 6,414 points
       - volume >= 1,000,000 USD  => 9,530 points
+
+    Source: dYdX Foundation’s Retroactive Mining Rewards blog, 2021.
+            https://dydx.foundation/blog
+
+    The user is placed in one of five tiers based on trading volume (USD).
+    Here, we adapt a piecewise constant reward structure:
+
+    Example tiers (approx.):
+      - volume < 1,000 USD  => 310 points
+      - 1,000 <= volume < 10,000 USD  => 1,163 points
+      - 10,000 <= volume < 100,000 USD => 2,584 points
+      - 100,000 <= volume < 1,000,000 USD => 6,414 points
+      - volume >= 1,000,000 USD => 9,529 points
     """
     def __init__(self, tiers=None):
+        # Parameter estimates from:
+        # https://cointelegraph.com/news/dydx-airdrop-how-to-claim-310-to-9529-dydx-for-free
         if tiers is None:
             self.tiers = [
                 (1000, 310),
@@ -47,37 +62,47 @@ class DydxRetroTieredRewardPolicy(PreTGERewardsPolicy):
 
 
 # ======================
-# Vertex Maker/Taker Reward Policy
+# Vertex (Pre-TGE) Maker/Taker Reward Policy 
 # ======================
 class VertexMakerTakerRewardPolicy(PreTGERewardsPolicy):
     """
-    Implements a rewards scheme inspired by Vertex’s pre-launch program.
+    Vertex Early User Airdrop (pre-TGE).
     
-    Users earn points based on:
-      - maker_volume weighted at 37.5%
-      - taker_volume weighted at 37.5%
-      - a Q-score (liquidity quality) weighted at 25%
-    Additionally, a referral bonus (e.g., 25% of the referees’ points) is added.
-    
-    activity_stats should include:
-      'maker_volume', 'taker_volume', 'qscore', and optionally 'referral_points'
+    As described: ~9% of supply was allocated to early adopters, typically
+    awarding points for maker volume (heavier weighting), taker volume, 
+    and possibly referral or deposit bonuses.
+
+    Reference: https://mirror.xyz/vertexprotocol.eth / official docs
+    According to known references, we can approximate:
+
+      Score_i = maker_volume * maker_weight
+              + taker_volume * taker_weight
+              + referral_points * referral_rate
+      (One could also add deposit volume or Q-score factors if desired.)
+
+    Default weights are hypothetical but reflect the idea that maker volume
+    and taker volume are equally weighted in the final pre-TGE push.
+
+    The final token distribution pre-TGE was then proportional to each user's
+    total Score_i / sum(Score_j). Here, we only produce the 'points' logic.
     """
-    def __init__(self, maker_weight=0.375, taker_weight=0.375, qscore_weight=0.25, referral_rate=0.25):
+    def __init__(self, maker_weight=0.6, taker_weight=0.3, referral_rate=0.1):
+        # Parameter estimates:
+        # maker_weight=0.6, taker_weight=0.3, referral_rate=0.1
+        # mirror approximate emphasis from Vertex docs:
+        # "75%/25% after launch" => for pre-TGE, we might skew to ~60%/30% + referral
         self.maker_weight = maker_weight
         self.taker_weight = taker_weight
-        self.qscore_weight = qscore_weight
         self.referral_rate = referral_rate
 
     def calculate_points(self, activity_stats, user):
         maker = activity_stats.get('maker_volume', 0)
         taker = activity_stats.get('taker_volume', 0)
-        qscore = activity_stats.get('qscore', 0)
-        base_points = (maker * self.maker_weight +
-                       taker * self.taker_weight +
-                       qscore * self.qscore_weight)
-        referral_points = activity_stats.get('referral_points', 0)
-        bonus = referral_points * self.referral_rate
-        return base_points + bonus
+        referrals = activity_stats.get('referral_points', 0)
+        score = (maker * self.maker_weight
+                 + taker * self.taker_weight
+                 + referrals * self.referral_rate)
+        return score
 
 
 # ======================
@@ -85,18 +110,19 @@ class VertexMakerTakerRewardPolicy(PreTGERewardsPolicy):
 # ======================
 class JupiterVolumeTierRewardPolicy(PreTGERewardsPolicy):
     """
-    Mimics the tiered, piecewise constant reward system as seen in Jupiter's airdrop.
-    
-    Users are awarded a fixed number of points based on swap volume thresholds.
+    Jupiter's "Jupuary" Airdrop Tiers (pre-TGE).
+
+    The actual airdrop was tiered by user categories (Swap Users, Expert Traders, etc.),
+    each with multiple sub-tiers. Here, we approximate it as a piecewise function
+    of total swap volume alone, ignoring categories. 
+    Reference: https://beincrypto.com/jupiter-airdrop-guide
+
     Example tiers (in USD volume):
-      - volume >= 1,000: 50 points
-      - volume >= 29,000: 250 points
-      - volume >= 500,000: 3,000 points
-      - volume >= 3,000,000: 10,000 points
-      - volume >= 14,000,000: 20,000 points
-    
-    activity_stats should include:
-      'swap_volume'
+      - volume >= 1,000       =>  50 points
+      - volume >= 29,000      => 250 points
+      - volume >= 500,000     => 3,000 points
+      - volume >= 3,000,000   => 10,000 points
+      - volume >= 14,000,000  => 20,000 points
     """
     def __init__(self, tiers=None):
         if tiers is None:
@@ -122,158 +148,101 @@ class JupiterVolumeTierRewardPolicy(PreTGERewardsPolicy):
 
 
 # ======================
-# Aevo Boosted Volume Reward Policy
+# Aevo "Farm Boost" Pre-TGE Reward Policy
 # ======================
-class AevoBoostedVolumeRewardPolicy(PreTGERewardsPolicy):
+class AevoFarmBoostRewardPolicy(PreTGERewardsPolicy):
     """
-    Mimics Aevo's gamified reward system that applies a base boost (based on trailing volume)
-    and a chance-based "lucky boost" to each trade.
-    
-    activity_stats should include:
-      'trade_volume': the notional volume for the current trade,
-      'trailing_volume': the total volume over a trailing 7-day window.
-    
-    The base boost scales from 1× (no boost) to base_max (e.g., 4×) as trailing_volume increases.
-    A lucky boost is applied probabilistically. Default probabilities:
-      - 10x boost with 10% chance,
-      - 50x boost with 2.5% chance,
-      - 100x boost with 1% chance.
+    Aevo Retro + Farm Boost (pre-TGE).
+    Reference: Aevo team's Mirror post: https://mirror.xyz/aevo.eth
+               ~30M AEVO allocated pre-launch, with volume 'boosted' by some multiplier.
+
+    We consider two volumes:
+      - pre_volume: user’s volume before the “farm boost” campaign
+      - farm_volume: user’s volume during the “farm boost” period
+    Each user might have a personal boost multiplier B_i (1-4), plus possible
+    deposit or first-mover bonuses.
+
+    Formula (from compiled references):
+      Score_i = pre_volume + B_i * farm_volume + deposit_bonus + early_trader_bonus + ...
+    For simplicity, we store them in activity_stats as:
+      - 'pre_volume'
+      - 'farm_volume'
+      - 'boost_mult' (user-specific multiplier, default 2.0)
+      - 'deposit_bonus' (e.g. 0 or 100 points)
+      - 'early_bonus' (e.g. 0 or 50 points)
+
+    If not present, default them to zero or an appropriate fallback.
     """
-    def __init__(self, base_max=4.0, lucky_probs=None):
-        self.base_max = base_max
-        if lucky_probs is None:
-            # Sorted by multiplier values in ascending order
-            self.lucky_probs = {10: 0.10, 50: 0.025, 100: 0.01}
+    def calculate_points(self, activity_stats, user):
+        pre_vol = activity_stats.get('pre_volume', 0)
+        farm_vol = activity_stats.get('farm_volume', 0)
+        boost = activity_stats.get('boost_mult', 1.0)  # B_i in [1..4]
+        deposit_bonus = activity_stats.get('deposit_bonus', 0)
+        early_bonus = activity_stats.get('early_bonus', 0)
+        # Weighted sum:
+        score = pre_vol + boost * farm_vol + deposit_bonus + early_bonus
+        return score
+
+# =============================================================================
+# Generic Pre-TGE Reward Policy (Custom)
+# =============================================================================
+class GenericPreTGERewardPolicy(PreTGERewardsPolicy):
+    """
+    A custom/generic pre-TGE reward policy to be used when a DEX does not
+    follow one of the established schemes.
+
+    This policy allows you to define a weighted linear combination of multiple
+    activity metrics. For example, a user may earn points based on:
+      - trading volume ('volume')
+      - number of interactions ('engagement')
+      - referral count ('referrals')
+      - deposit amount ('deposits')
+
+    The final score is defined as:
+    
+      Score = w_volume * volume + w_engagement * engagement + w_referrals * referrals + w_deposits * deposits
+
+    You can adjust the weights as needed.
+
+    Source inspiration: General practices in crypto airdrop incentive design and community proposals,
+    e.g., discussions on crypto forums (see https://forum.dydx.community).
+    """
+    def __init__(self, weights=None):
+        # Default weights if not provided:
+        # Emphasize volume most, then engagement, then referrals, then deposits.
+        if weights is None:
+            self.weights = {
+                'volume': 0.5,
+                'engagement': 0.3,
+                'referrals': 0.1,
+                'deposits': 0.1
+            }
         else:
-            self.lucky_probs = lucky_probs
+            self.weights = weights
 
     def calculate_points(self, activity_stats, user):
-        trade_volume = activity_stats.get('trade_volume', 0)
-        trailing_volume = activity_stats.get('trailing_volume', 0)
-        # Determine base boost multiplier.
-        threshold = 5000000  # Example threshold for maximum boost
-        base_multiplier = 1 + (self.base_max - 1) * min(trailing_volume / threshold, 1)
-        
-        # Determine lucky boost multiplier using probability.
-        lucky_multiplier = 1
-        rnd = np.random.rand()
-        cumulative = 0
-        for multiplier, prob in sorted(self.lucky_probs.items(), key=lambda x: x[1]):
-            cumulative += prob
-            if rnd < cumulative:
-                lucky_multiplier = multiplier
-                break
+        score = 0
+        for key, weight in self.weights.items():
+            score += weight * activity_stats.get(key, 0)
+        return score
 
-        # Final boosted points: the trade volume is amplified by the sum of boosts minus 1 
-        # (since a base multiplier of 1 means no extra boost).
-        return trade_volume * (base_multiplier + lucky_multiplier - 1)
-
-
-# ======================
-# Helix (Injective) Loyalty Points Reward Policy
-# ======================
-class HelixLoyaltyPointsRewardPolicy(PreTGERewardsPolicy):
-    """
-    Mimics the multi-factor loyalty point system used by Injective/Helix.
-    
-    This policy rewards users based on:
-      - trading volume (weighted linearly),
-      - diversity bonus (number of unique markets traded),
-      - loyalty bonus (active days multiplied by volume).
-    
-    activity_stats should include:
-      'trading_volume', 'active_days', 'unique_markets'
-    """
-    def __init__(self, volume_weight=1.0, diversity_bonus=100, loyalty_bonus=0.1):
-        self.volume_weight = volume_weight
-        self.diversity_bonus = diversity_bonus
-        self.loyalty_bonus = loyalty_bonus
-
-    def calculate_points(self, activity_stats, user):
-        volume = activity_stats.get('trading_volume', 0)
-        active_days = activity_stats.get('active_days', 0)
-        unique_markets = activity_stats.get('unique_markets', 0)
-        return (self.volume_weight * volume +
-                self.diversity_bonus * unique_markets +
-                self.loyalty_bonus * active_days * volume)
-
-
-# ======================
-# Game-like (MMR) Reward Policy
-# ======================
-class GameLikeMMRRewardPolicy(PreTGERewardsPolicy):
-    """
-    Implements a game-like rewards system that is inspired by MMR (Match-Making Rating)
-    used in competitive video games.
-    
-    activity_stats should include:
-      'wins', 'losses', and 'consecutive_days' of activity.
-    
-    The reward is based on:
-      - a base number of points,
-      - bonus points proportional to win rate,
-      - additional bonus for consistency (consecutive days active).
-    """
-    def __init__(self, base_points=1000, win_rate_weight=500, consistency_bonus=300):
-        self.base_points = base_points
-        self.win_rate_weight = win_rate_weight
-        self.consistency_bonus = consistency_bonus
-
-    def calculate_points(self, activity_stats, user):
-        wins = activity_stats.get('wins', 0)
-        losses = activity_stats.get('losses', 0)
-        consecutive_days = activity_stats.get('consecutive_days', 0)
-        total_games = wins + losses
-        win_rate = wins / total_games if total_games > 0 else 0
-        return (self.base_points +
-                self.win_rate_weight * win_rate +
-                self.consistency_bonus * consecutive_days)
-
-
-# ======================
-# Custom / Generic Reward Policy
-# ======================
-class CustomPreTGERewardPolicy(PreTGERewardsPolicy):
-    """
-    A flexible reward policy that accepts a custom function.
-    
-    The custom function should have the signature:
-        custom_function(activity_stats, user) -> points
-    """
-    def __init__(self, custom_function):
-        self.custom_function = custom_function
-
-    def calculate_points(self, activity_stats, user):
-        return self.custom_function(activity_stats, user)
-
-
-# Example usage (for testing or integration):
+# -----------------------------------------------------------------------------
+# Example usage for testing:
+# -----------------------------------------------------------------------------
 if __name__ == '__main__':
-    # Simulated activity stats for a given user:
-    activity_dydx = {'trading_volume': 15000}
-    activity_vertex = {'maker_volume': 5000, 'taker_volume': 3000, 'qscore': 200, 'referral_points': 100}
-    activity_jupiter = {'swap_volume': 600000}
-    activity_aevo = {'trade_volume': 25000, 'trailing_volume': 3000000}
-    activity_helix = {'trading_volume': 10000, 'active_days': 20, 'unique_markets': 5}
-    activity_mmr = {'wins': 8, 'losses': 2, 'consecutive_days': 10}
-
-    # Dummy user object (could be extended from your user classes)
+    dydx_stats = {'trading_volume': 15000}
+    vertex_stats = {'maker_volume': 5000, 'taker_volume': 3000, 'referral_points': 20}
+    jupiter_stats = {'swap_volume': 600000}
+    aevo_stats = {'pre_volume': 20000, 'farm_volume': 5000, 'boost_mult': 2.0, 'deposit_bonus': 100}
+    generic_stats = {'volume': 12000, 'engagement': 5, 'referrals': 2, 'deposits': 3000}
+    
     class DummyUser:
         pass
-    dummy_user = DummyUser()
 
-    # Create policy instances:
-    dydx_policy = DydxRetroTieredRewardPolicy()
-    vertex_policy = VertexMakerTakerRewardPolicy()
-    jupiter_policy = JupiterVolumeTierRewardPolicy()
-    aevo_policy = AevoBoostedVolumeRewardPolicy()
-    helix_policy = HelixLoyaltyPointsRewardPolicy()
-    mmr_policy = GameLikeMMRRewardPolicy()
+    user = DummyUser()
 
-    # Calculate and print reward points for each:
-    print("dYdX Retro Tiered Reward Points:", dydx_policy.calculate_points(activity_dydx, dummy_user))
-    print("Vertex Maker/Taker Reward Points:", vertex_policy.calculate_points(activity_vertex, dummy_user))
-    print("Jupiter Volume Tier Reward Points:", jupiter_policy.calculate_points(activity_jupiter, dummy_user))
-    print("Aevo Boosted Volume Reward Points:", aevo_policy.calculate_points(activity_aevo, dummy_user))
-    print("Helix Loyalty Points Reward Points:", helix_policy.calculate_points(activity_helix, dummy_user))
-    print("Game-like MMR Reward Points:", mmr_policy.calculate_points(activity_mmr, dummy_user))
+    print("dYdX Retro Tiered Points:", DydxRetroTieredRewardPolicy().calculate_points(dydx_stats, user))
+    print("Vertex Maker/Taker Points:", VertexMakerTakerRewardPolicy().calculate_points(vertex_stats, user))
+    print("Jupiter Volume Tier Points:", JupiterVolumeTierRewardPolicy().calculate_points(jupiter_stats, user))
+    print("Aevo Farm Boost Points:", AevoFarmBoostRewardPolicy().calculate_points(aevo_stats, user))
+    print("Generic Pre-TGE Reward Points:", GenericPreTGERewardPolicy().calculate_points(generic_stats, user))
