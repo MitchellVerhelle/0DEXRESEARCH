@@ -206,3 +206,5 @@ _Sources: [GBM references from Investopedia](https://www.investopedia.com/terms/
 - Modify simulation params in **main.py** (like user count, supply, or jump intensities).
 - Close each plot window to see the next.
 - Save plots as you like.
+
+_Replace your existing README.md with this content for a concise summary of the updated file structure and logic._ 
