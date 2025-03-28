@@ -41,9 +41,9 @@ _Sources: [Messari](https://messari.io/asset/unlock-schedules) and [Solana docs]
 
 Contains post-TGE engagement reward policies. For instance, **EngagementMultiplierPolicy** applies:
 
-$$
+\[
 \text{multiplier} = 1 + \gamma \left(\frac{\text{active\_days}}{T}\right)^\delta
-$$
+\]
 
 - $\gamma$ = max additional multiplier (e.g. 0.5 → full activity yields 1.5×),
 - $T$ = simulation horizon (months),
