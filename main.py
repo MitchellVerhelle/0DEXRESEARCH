@@ -16,15 +16,18 @@ from preTGE_rewards import (
     AevoFarmBoostRewardPolicy,
     GenericPreTGERewardPolicy
 )
+from postTGE_rewards_policy import (
+    GenericPostTGERewardPolicy,
+    EngagementMultiplierPolicy
+)
 from postTGE_rewards import PostTGERewardsSimulator
-from postTGE_rewards_policy import GenericPostTGERewardPolicy
-from plot_helper import plot_airdrop_distribution_grid, plot_vesting_schedule, plot_price_evolution_overlay
+from plot_helper import plot_airdrop_distribution_grid, plot_vesting_schedule, plot_price_evolution_overlay, plot_avg_price_heatmap, plot_avg_price_evolution_overlay
 from simulation import MonteCarloSimulation
 from users import RegularUser, SybilUser
 from activity_stats import generate_stats
 
 def run_simulation_for_combo(combo_name, num_users, total_supply, preTGE_steps, simulation_horizon,
-                             ad_policy, pre_policy, post_policy_config, base_price, elasticity, buyback_rate, alpha=0.5,
+                             ad_policy, pre_policy, post_policy, post_policy_config, base_price, elasticity, buyback_rate, alpha=0.5,
                              airdrop_allocation_fraction=0.25):
     sim = MonteCarloSimulation(
         num_users=num_users,
@@ -33,6 +36,7 @@ def run_simulation_for_combo(combo_name, num_users, total_supply, preTGE_steps, 
         simulation_horizon=simulation_horizon,
         airdrop_policy=ad_policy,
         preTGE_rewards_policy=pre_policy,
+        postTGE_rewards_policy=post_policy,
         airdrop_allocation_fraction=airdrop_allocation_fraction,
         initial_price=base_price
     )
@@ -99,9 +103,15 @@ if __name__ == '__main__':
         ("Aevo Farm Boost", AevoFarmBoostRewardPolicy()),
         ("Game-like MMR", GenericPreTGERewardPolicy())
     ]
+
+    # Define post-TGE rewards policies.
+    postTGE_policies = [
+        ("Generic", GenericPostTGERewardPolicy()),
+        ("Engagement Multiplier", GenericPostTGERewardPolicy(engagement_policy=EngagementMultiplierPolicy()))
+    ]
     
     # Define post-TGE rewards configurations.
-    postTGE_configs = [
+    postTGE_scenarios = [
         ("Baseline", {"mu": 0.0, "sigma": 0.05, "jump_intensity": 0.1, "jump_mean": -0.05, "jump_std": 0.1}),
         ("High Volatility", {"mu": 0.0, "sigma": 0.1, "jump_intensity": 0.15, "jump_mean": -0.1, "jump_std": 0.15}),
         ("Low Volatility", {"mu": 0.0, "sigma": 0.03, "jump_intensity": 0.05, "jump_mean": -0.03, "jump_std": 0.05}),
@@ -113,7 +123,7 @@ if __name__ == '__main__':
     total_supply = 100_000_000
     airdrop_allocation_percentage = 0.15
     preTGE_steps = 50
-    simulation_horizon = 60  # months
+    simulation_horizon = 60 # months
     base_price = 10.0
     buyback_rate = 0.2
     alpha = 0.1
@@ -122,36 +132,34 @@ if __name__ == '__main__':
     results = {}
     tasks = []
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
         for pre_name, pre_policy in preTGE_policies:
             for ad_name, ad_policy in airdrop_policies:
-                for post_name, post_config in postTGE_configs:
-                    combo_name = f"{pre_name} + {ad_name} + {post_name}"
-                    print(f"Submitting simulation for: {combo_name}")
-                    post_buyback_rate = post_config.get("buyback_rate", buyback_rate)
-                    task = executor.submit(
-                        run_simulation_for_combo,
-                        combo_name,
-                        num_users, total_supply, preTGE_steps, simulation_horizon,
-                        ad_policy, pre_policy, post_config, base_price, elasticity, post_buyback_rate,
-                        alpha=alpha,
-                        airdrop_allocation_fraction=airdrop_allocation_percentage
-                    )
-                    tasks.append(task)
+                for reward_name, reward_policy in postTGE_policies:
+                    for scenario_name, scenario_config in postTGE_scenarios:
+                        combo_name = f"{pre_name} + {ad_name} + {reward_name} + {scenario_name}"
+                        print(f"Submitting simulation for: {combo_name}")
+                        post_buyback_rate = scenario_config.get("buyback_rate", buyback_rate)
+                        task = executor.submit(
+                            run_simulation_for_combo,
+                            combo_name,
+                            num_users, total_supply, preTGE_steps, simulation_horizon,
+                            ad_policy, pre_policy, reward_policy, scenario_config, base_price, elasticity, post_buyback_rate,
+                            alpha=alpha,
+                            airdrop_allocation_fraction=airdrop_allocation_percentage
+                        )
+                        tasks.append(task)
         
         for future in concurrent.futures.as_completed(tasks):
             combo_name, res = future.result()
             results[combo_name] = res
             print(f"Completed simulation for: {combo_name}")
     
-    # ---------------------------
     # Plot Histogram of TGE Token Distribution
-    # ---------------------------
-    # Use only the pre-TGE + airdrop combinations (ignoring post-TGE variations).
     baseline_results = {}
     for combo_name, data in results.items():
         parts = combo_name.split(" + ")
-        if len(parts) == 3:
+        if len(parts) == 4 and parts[2] == "Generic" and parts[3] == "Baseline":
             key = " + ".join(parts[:2])
             if key not in baseline_results:
                 baseline_results[key] = data
@@ -161,7 +169,7 @@ if __name__ == '__main__':
         finite_tokens = tokens[np.isfinite(tokens)]
         if finite_tokens.size > 0:
             plt.hist(finite_tokens, bins=30, alpha=0.5, label=combo_name,
-                    histtype='step', linewidth=1.5)
+                     histtype='step', linewidth=1.5)
     plt.xlabel("Tokens Assigned at TGE")
     plt.ylabel("Number of Users")
     plt.title("Histogram of TGE Tokens Distribution (Pre-TGE & Airdrop Policies)")
@@ -169,69 +177,58 @@ if __name__ == '__main__':
     plt.grid(True)
     plt.show(block=True)
 
-    # ---------------------------
     # Plot Vesting Schedule and Total Supply Over Time
-    # ---------------------------
-    # For one chosen simulation (e.g., "dYdX Retro + Linear + Baseline"), plot the vesting schedule.
-    chosen = "dYdX Retro + Linear + Baseline"
+    chosen = "dYdX Retro + Linear + Generic + Baseline"
     if chosen in results:
         chosen_result = results[chosen]
-        from plot_helper import plot_vesting_schedule
-        plot_vesting_schedule(chosen_result["months"], chosen_result["unlocked_history"],
-                                chosen_result["total_unlocked_history"])
+        plot_vesting_schedule(chosen_result["months"],
+                              chosen_result["unlocked_history"],
+                              chosen_result["total_unlocked_history"])
     else:
         print(f"Chosen simulation '{chosen}' not found.")
     
-    # ---------------------------
     # TGE Distribution Grid Plot
-    # ---------------------------
-    # For TGE distribution, use only the preTGE + airdrop policies.
-    # Create a dictionary keyed by "<pre_policy> + <ad_policy>" from results that have "Baseline" post config.
     tge_results = {}
     for combo_name, data in results.items():
         parts = combo_name.split(" + ")
-        if len(parts) == 3 and parts[2] == "Baseline":
+        if len(parts) == 4 and parts[2] == "Generic" and parts[3] == "Baseline":
             key = f"{parts[0]} + {parts[1]}"
-            # We assume all postTGE variants yield the same TGE distribution.
             tge_results[key] = data
-
     pre_labels = [p[0] for p in preTGE_policies]
     ad_labels = [a[0] for a in airdrop_policies]
-    from plot_helper import plot_airdrop_distribution_grid
     plot_airdrop_distribution_grid(tge_results, pre_labels, ad_labels)
     
-    # ---------------------------
     # Price Evolution Heatmaps
-    # ---------------------------
-    # For each postTGE config, build a separate heatmap (rows: preTGE policies; columns: airdrop policies)
-    for post_name, _ in postTGE_configs:
-        heatmap = np.zeros((len(pre_labels), len(ad_labels)))
-        for i, pre_name in enumerate(pre_labels):
-            for j, ad_name in enumerate(ad_labels):
-                combo_name = f"{pre_name} + {ad_name} + {post_name}"
-                if combo_name in results:
-                    final_price = results[combo_name]["prices"][-1]
-                    heatmap[i, j] = final_price
-        plt.figure(figsize=(8, 6))
-        plt.imshow(heatmap, cmap="viridis", aspect="auto")
-        plt.colorbar(label="Final Token Price (USD)")
-        plt.xticks(ticks=np.arange(len(ad_labels)), labels=ad_labels, rotation=45)
-        plt.yticks(ticks=np.arange(len(pre_labels)), labels=pre_labels)
-        plt.title(f"Heatmap: Final Token Price (Month 60) - {post_name}", fontsize=12)
-        for i in range(heatmap.shape[0]):
-            for j in range(heatmap.shape[1]):
-                plt.text(j, i, f"{heatmap[i, j]:.2f}", ha="center", va="center", color="w")
-        plt.tight_layout()
-        plt.show()
+    post_reward_labels = [p[0] for p in postTGE_policies]
+    scenario_labels = [s[0] for s in postTGE_scenarios]
+    for reward_label in post_reward_labels:
+        for scenario_label in scenario_labels:
+            heatmap = np.zeros((len(pre_labels), len(ad_labels)))
+            for i, pre_name in enumerate(pre_labels):
+                for j, ad_name in enumerate(ad_labels):
+                    combo_name = f"{pre_name} + {ad_name} + {reward_label} + {scenario_label}"
+                    if combo_name in results:
+                        final_price = results[combo_name]["prices"][-1]
+                        heatmap[i, j] = final_price
+            plt.figure(figsize=(8, 6))
+            plt.imshow(heatmap, cmap="viridis", aspect="auto")
+            plt.colorbar(label="Final Token Price (USD)")
+            plt.xticks(ticks=np.arange(len(ad_labels)), labels=ad_labels, rotation=45)
+            plt.yticks(ticks=np.arange(len(pre_labels)), labels=pre_labels)
+            plt.title(f"Heatmap: Final Price (Month 60)\n{reward_label} + {scenario_label}", fontsize=12)
+            for i in range(heatmap.shape[0]):
+                for j in range(heatmap.shape[1]):
+                    plt.text(j, i, f"{heatmap[i, j]:.2f}", ha="center", va="center", color="w")
+            plt.tight_layout()
+            plt.show()
     
-    # ---------------------------
-    # Plot Price Evolution Overlay Grid
-    # ---------------------------
-    # For each pre-TGE + airdrop combination, overlay the price evolution curves for all post-TGE configurations.
-    # Define the lists of policy names.
-    # pre_labels, ad_labels, and post_labels should be lists of names (strings).
-    pre_labels = [p[0] for p in preTGE_policies]
-    ad_labels = [a[0] for a in airdrop_policies]
-    post_labels = [p[0] for p in postTGE_configs]
-
-    plot_price_evolution_overlay(results, pre_labels, ad_labels, post_labels, max_rows_per_fig=3, max_cols_per_fig=4)
+    # Averages
+    plot_avg_price_heatmap(results, pre_labels, ad_labels, post_reward_labels, scenario_labels)
+    
+    # Price Evolution Overlay Grid
+    plot_price_evolution_overlay(results, pre_labels, ad_labels, post_reward_labels, scenario_labels,
+                                 max_rows_per_fig=2, max_cols_per_fig=3)
+    
+    # Averages
+    plot_avg_price_evolution_overlay(results, pre_labels, ad_labels, post_reward_labels, scenario_labels,
+                                 max_rows_per_fig=2, max_cols_per_fig=3)

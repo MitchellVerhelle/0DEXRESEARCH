@@ -2,13 +2,14 @@ import numpy as np
 from user_pool import UserPool
 from vesting import PostTGERewardsManager
 from preTGE_rewards import GenericPreTGERewardPolicy
+from postTGE_rewards_policy import GenericPostTGERewardPolicy
 from airdrop_policy import LinearAirdropPolicy
 from users import RegularUser, SybilUser
 from activity_stats import generate_stats
 
 class MonteCarloSimulation:
     def __init__(self, num_users=1500000, total_supply=100_000_000, preTGE_steps=100, simulation_horizon=60,
-                 airdrop_policy=None, preTGE_rewards_policy=None, airdrop_allocation_fraction=0.15,
+                 airdrop_policy=None, preTGE_rewards_policy=None, postTGE_rewards_policy=None, airdrop_allocation_fraction=0.15,
                  initial_price=10.0):
         """
         Parameters:
@@ -27,6 +28,7 @@ class MonteCarloSimulation:
         self.simulation_horizon = simulation_horizon  # in months
         self.airdrop_policy = airdrop_policy if airdrop_policy is not None else LinearAirdropPolicy()
         self.preTGE_rewards_policy = preTGE_rewards_policy if preTGE_rewards_policy is not None else GenericPreTGERewardPolicy()
+        self.postTGE_rewards_policy = postTGE_rewards_policy if postTGE_rewards_policy is not None else GenericPostTGERewardPolicy()
         self.initial_price = initial_price
         
         self.user_pool = UserPool(num_users=self.num_users, airdrop_policy=self.airdrop_policy)
@@ -136,11 +138,12 @@ class MonteCarloSimulation:
 
             # Update user activity for this time step.
             for user in self.user_pool.users:
-                if isinstance(user, RegularUser):
-                    user.active = (np.random.rand() < A_new)
-                elif isinstance(user, SybilUser):
-                    user.active = False
-                user.step('PostTGE')
+                user.step(
+                    'PostTGE',
+                    current_price=dynamic_prices[t+1],
+                    baseline_price=baseline_prices[t+1],
+                    postTGE_rewards_policy=self.postTGE_rewards_policy
+                )
         
         return {
             "months": months,
@@ -206,6 +209,7 @@ if __name__ == '__main__':
         simulation_horizon=60,
         airdrop_policy=LinearAirdropPolicy(),
         preTGE_rewards_policy=GenericPreTGERewardPolicy(),
+        postTGE_rewards_policy=GenericPostTGERewardPolicy(),
         airdrop_allocation_fraction=0.15,
         initial_price=10.0
     )
