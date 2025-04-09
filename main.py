@@ -20,15 +20,36 @@ from postTGE_rewards_policy import (
     GenericPostTGERewardPolicy,
     EngagementMultiplierPolicy
 )
-from postTGE_rewards import PostTGERewardsSimulator
-from plot_helper import plot_airdrop_distribution_grid, plot_vesting_schedule, plot_price_evolution_overlay, plot_avg_price_heatmap, plot_avg_price_evolution_overlay
+# No longer use PostTGERewardsSimulator directly.
+from plot_helper import (
+    plot_airdrop_distribution_grid,
+    plot_vesting_schedule,
+    plot_price_evolution_overlay,
+    plot_avg_price_heatmap,
+    plot_avg_price_evolution_overlay
+)
 from simulation import MonteCarloSimulation
 from users import RegularUser, SybilUser
 from activity_stats import generate_stats
 
 def run_simulation_for_combo(combo_name, num_users, total_supply, preTGE_steps, simulation_horizon,
-                             ad_policy, pre_policy, post_policy, post_policy_config, base_price, elasticity, buyback_rate, alpha=0.5,
+                             ad_policy, pre_policy, post_policy, post_policy_config,
+                             base_price, elasticity, buyback_rate, alpha=0.5,
                              airdrop_allocation_fraction=0.25):
+    # Define the demand series (raw demand values) as provided from Forgd.
+    demand_values = np.array([
+        45, 25, 10, 12, 6, 7, 1,
+        5, 2, 1, 1, 5, 15, 10,
+        12, 14, 43, 50, 51, 43,
+        66, 68, 70, 71, 77, 73, 73, 73,
+        69, 63, 61, 63, 65, 62, 51, 52, 47,
+        42, 34, 32, 38, 32, 31, 32, 37, 33,
+        28, 25, 22, 23, 21, 20, 18, 19, 17,
+        19, 21, 12, 10, 13
+    ], dtype=float)
+    
+    # Instantiate MonteCarloSimulation. All phases (pre-TGE, TGE, and dynamic post-TGE evolution)
+    # are now computed inside run().
     sim = MonteCarloSimulation(
         num_users=num_users,
         total_supply=total_supply,
@@ -38,50 +59,32 @@ def run_simulation_for_combo(combo_name, num_users, total_supply, preTGE_steps, 
         preTGE_rewards_policy=pre_policy,
         postTGE_rewards_policy=post_policy,
         airdrop_allocation_fraction=airdrop_allocation_fraction,
-        initial_price=base_price
-    )
-    sim_results = sim.run()  # Returns a dictionary.
-    TGE_total = sim_results["scaled_TGE_total"]
-    months = sim_results["months"]
-    total_unlocked_history = sim_results["total_unlocked_history"]
-    unlocked_history = sim_results["unlocked_history"]
-    dist = sim_results["distribution"]
-    active_fraction_history = sim_results["active_fraction_history"]
-
-    # Use the PostTGERewardsSimulator for dynamic price evolution.
-    simulator = PostTGERewardsSimulator(
-        TGE_total=TGE_total,
-        total_unlocked_history=total_unlocked_history,
-        users=sim.user_pool.users,
-        base_price=base_price,
-        elasticity=elasticity,
+        initial_price=base_price,
         buyback_rate=buyback_rate,
-        alpha=alpha,
-        mu=post_policy_config.get("mu", 0.0),
-        sigma=post_policy_config.get("sigma", 0.05),
-        jump_intensity=post_policy_config.get("jump_intensity", 0.1),
-        jump_mean=post_policy_config.get("jump_mean", -0.05),
-        jump_std=post_policy_config.get("jump_std", 0.1),
-        distribution=dist
+        elasticity=elasticity,
+        demand_series=demand_values
     )
-    prices = simulator.simulate_price_evolution()
-
+    # Run the full simulation.
+    sim_results = sim.run()  # This returns a dictionary with dynamic price evolution.
+    
     # Apply a post-TGE reward policy (engagement multiplier) to each RegularUser.
     post_reward_policy = GenericPostTGERewardPolicy()
-    active_days = active_fraction_history[-1] * simulation_horizon if len(active_fraction_history) > 0 else simulation_horizon
+    active_days = sim_results["active_fraction_history"][-1] * simulation_horizon \
+                  if len(sim_results["active_fraction_history"]) > 0 else simulation_horizon
     for user in sim.user_pool.users:
         if isinstance(user, RegularUser):
             post_reward_policy.apply_rewards(user, active_days)
     
+    # IMPORTANT: change the key for prices to "prices" so that plot_helper works correctly.
     return combo_name, {
-        "TGE_total": TGE_total,
-        "months": months,
-        "total_unlocked_history": total_unlocked_history,
-        "unlocked_history": unlocked_history,
-        "prices": prices,
+        "TGE_total": sim_results["scaled_TGE_total"],
+        "months": sim_results["months"],
+        "prices": sim_results["dynamic_prices"],  # rename to "prices"
+        "active_fraction_history": sim_results["active_fraction_history"],
         "TGE_tokens": [user.tokens for user in sim.user_pool.users],
-        "distribution": dist,
-        "active_fraction_history": active_fraction_history,
+        "unlocked_history": sim_results["unlocked_history"],
+        "total_unlocked_history": sim_results["total_unlocked_history"],
+        "distribution": sim_results["distribution"],
         "combo_label": combo_name
     }
 
@@ -112,22 +115,22 @@ if __name__ == '__main__':
     
     # Define post-TGE rewards configurations.
     postTGE_scenarios = [
-        ("Baseline", {"mu": 0.0, "sigma": 0.05, "jump_intensity": 0.1, "jump_mean": -0.05, "jump_std": 0.1}),
-        ("High Volatility", {"mu": 0.0, "sigma": 0.1, "jump_intensity": 0.15, "jump_mean": -0.1, "jump_std": 0.15}),
-        ("Low Volatility", {"mu": 0.0, "sigma": 0.03, "jump_intensity": 0.05, "jump_mean": -0.03, "jump_std": 0.05}),
-        ("Aggressive Buyback", {"mu": 0.0, "sigma": 0.05, "jump_intensity": 0.1, "jump_mean": -0.05, "jump_std": 0.1, "buyback_rate": 0.3})
+        ("Baseline", {"sigma": 0.05, "jump_intensity": 0.1, "jump_mean": -0.05, "jump_std": 0.1}),
+        ("High Volatility", {"sigma": 0.1, "jump_intensity": 0.15, "jump_mean": -0.1, "jump_std": 0.15}),
+        ("Low Volatility", {"sigma": 0.03, "jump_intensity": 0.05, "jump_mean": -0.03, "jump_std": 0.05}),
+        ("Aggressive Buyback", {"sigma": 0.05, "jump_intensity": 0.1, "jump_mean": -0.05, "jump_std": 0.1, "buyback_rate": 0.3})
     ]
     
     # Simulation parameters.
-    num_users = 10_000
-    total_supply = 100_000_000
-    airdrop_allocation_percentage = 0.15
+    num_users = 40_000
+    total_supply = 1_000_000_000
+    airdrop_allocation_percentage = 0.25
     preTGE_steps = 50
-    simulation_horizon = 60 # months
-    base_price = 10.0
+    simulation_horizon = 60  # months
+    base_price = 0.2
     buyback_rate = 0.2
     alpha = 0.1
-    elasticity = 1.0
+    elasticity = 0.5
     
     results = {}
     tasks = []
@@ -139,12 +142,14 @@ if __name__ == '__main__':
                     for scenario_name, scenario_config in postTGE_scenarios:
                         combo_name = f"{pre_name} + {ad_name} + {reward_name} + {scenario_name}"
                         print(f"Submitting simulation for: {combo_name}")
+                        # Use the buyback_rate from config if provided.
                         post_buyback_rate = scenario_config.get("buyback_rate", buyback_rate)
                         task = executor.submit(
                             run_simulation_for_combo,
                             combo_name,
                             num_users, total_supply, preTGE_steps, simulation_horizon,
-                            ad_policy, pre_policy, reward_policy, scenario_config, base_price, elasticity, post_buyback_rate,
+                            ad_policy, pre_policy, reward_policy, scenario_config,
+                            base_price, elasticity, post_buyback_rate,
                             alpha=alpha,
                             airdrop_allocation_fraction=airdrop_allocation_percentage
                         )
@@ -154,6 +159,8 @@ if __name__ == '__main__':
             combo_name, res = future.result()
             results[combo_name] = res
             print(f"Completed simulation for: {combo_name}")
+    
+    # (Plotting code below remains the same.)
     
     # Plot Histogram of TGE Token Distribution
     baseline_results = {}
@@ -181,6 +188,7 @@ if __name__ == '__main__':
     chosen = "dYdX Retro + Linear + Generic + Baseline"
     if chosen in results:
         chosen_result = results[chosen]
+        from plot_helper import plot_vesting_schedule
         plot_vesting_schedule(chosen_result["months"],
                               chosen_result["unlocked_history"],
                               chosen_result["total_unlocked_history"])
@@ -196,11 +204,13 @@ if __name__ == '__main__':
             tge_results[key] = data
     pre_labels = [p[0] for p in preTGE_policies]
     ad_labels = [a[0] for a in airdrop_policies]
+    from plot_helper import plot_airdrop_distribution_grid
     plot_airdrop_distribution_grid(tge_results, pre_labels, ad_labels)
     
     # Price Evolution Heatmaps
     post_reward_labels = [p[0] for p in postTGE_policies]
     scenario_labels = [s[0] for s in postTGE_scenarios]
+    from plot_helper import plot_avg_price_heatmap, plot_price_evolution_overlay, plot_avg_price_evolution_overlay
     for reward_label in post_reward_labels:
         for scenario_label in scenario_labels:
             heatmap = np.zeros((len(pre_labels), len(ad_labels)))
@@ -221,14 +231,9 @@ if __name__ == '__main__':
                     plt.text(j, i, f"{heatmap[i, j]:.2f}", ha="center", va="center", color="w")
             plt.tight_layout()
             plt.show()
-    
-    # Averages
     plot_avg_price_heatmap(results, pre_labels, ad_labels, post_reward_labels, scenario_labels)
-    
-    # Price Evolution Overlay Grid
+
     plot_price_evolution_overlay(results, pre_labels, ad_labels, post_reward_labels, scenario_labels,
                                  max_rows_per_fig=2, max_cols_per_fig=3)
-    
-    # Averages
     plot_avg_price_evolution_overlay(results, pre_labels, ad_labels, post_reward_labels, scenario_labels,
-                                 max_rows_per_fig=2, max_cols_per_fig=3)
+                                     max_rows_per_fig=5, max_cols_per_fig=5)

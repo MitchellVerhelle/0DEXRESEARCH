@@ -4,48 +4,10 @@ class PostTGERewardsSimulator:
     """
     Simulator for post-TGE token price evolution using a supply/demand model
     combined with a jump-diffusion process.
-
-    The baseline price at time t is given by:
-      price(t) = base_price * (TGE_total / combined_supply(t))**elasticity
-
-    where:
-      - TGE_total: The token allocation at TGE (e.g., airdrop allocation).
-      - combined_supply(t) is a weighted average of:
-          circulating_supply(t) = TGE_total + (postTGE_unlocked(t) - postTGE_unlocked(0)) * avg_sell_weight,
-          effective_supply(t) = TGE_total + (postTGE_unlocked(t) - postTGE_unlocked(0)) * (avg_sell_weight*(1 - buyback_rate))
-          with combined_supply = alpha * circulating_supply + (1 - alpha) * effective_supply.
-    
-    Then a dynamic multiplier is applied via a jump-diffusion process:
-      - Diffusion (GBM component):
-          multiplier = exp((mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z),  where Z ~ N(0,1)
-      - Jump component:
-          With probability (jump_intensity * dt), a jump occurs:
-            jump = 1 + N(jump_mean, jump_std)
-          Otherwise, jump = 1.
-
-    Final price: price(t) = baseline_price(t) * cumulative_multiplier(t)
-
-    Parameter estimates:
-      - base_price: 10.0 (reference token price at TGE) [Source: Vertex docs & common practice]
-      - elasticity: 1.0 [Assumed; see economic models in crypto]
-      - buyback_rate: 0.2 (20% removal of unlocked tokens) [Assumed]
-      - alpha: 0.5 (equal weighting) [Assumed]
-      - mu: 0.0 (neutral drift)
-      - sigma: 0.05 (monthly volatility, e.g., from Investopedia's GBM discussions)
-      - jump_intensity: 0.1 per month [Assumed based on empirical data]
-      - jump_mean: -0.05 (average 5% drop when jump occurs)
-      - jump_std: 0.1 [Assumed variability]
-      - distribution: A dict with keys "small", "medium", "large", "sybil" that sum to 100,
-                      representing the user token distribution percentages.
-                      (Used to compute avg_sell_weight)
-
-    Sources:
-      - Geometric Brownian Motion: https://www.investopedia.com/terms/g/geometric-brownian-motion.asp
-      - Jump-Diffusion Models: https://www.sciencedirect.com/topics/engineering/jump-diffusion
     """
     def __init__(self, TGE_total, total_unlocked_history, users, base_price=10.0, elasticity=1.0,
-                 buyback_rate=0.2, alpha=0.5, mu=0.0, sigma=0.05, jump_intensity=0.1,
-                 jump_mean=-0.05, jump_std=0.1, distribution=None):
+                 buyback_rate=0.2, alpha=0.5, sigma=0.05, jump_intensity=0.1,
+                 jump_mean=-0.05, jump_std=0.1, distribution=None, demand_series=None):
         self.TGE_total = TGE_total
         self.total_unlocked_history = np.array(total_unlocked_history)
         self.users = users
@@ -53,21 +15,14 @@ class PostTGERewardsSimulator:
         self.elasticity = elasticity
         self.buyback_rate = buyback_rate
         self.alpha = alpha
-        self.mu = mu
         self.sigma = sigma
         self.jump_intensity = jump_intensity
         self.jump_mean = jump_mean
         self.jump_std = jump_std
         self.distribution = distribution
+        self.demand_series = demand_series
 
     def compute_token_price(self):
-        """
-        Compute the baseline supply/demand price based on unlocked tokens.
-
-        If distribution is provided, compute avg_sell_weight as:
-          avg_sell_weight = (small*1.0 + medium*0.8 + large*0.3 + sybil*1.0) / 100
-        Otherwise, defaults to 1.0.
-        """
         total_unlocked = self.total_unlocked_history
         initial_unlocked = total_unlocked[0]
         
@@ -91,15 +46,59 @@ class PostTGERewardsSimulator:
 
     def simulate_price_evolution(self, dt=1):
         """
-        Simulate dynamic token price evolution using a jump-diffusion process.
-        Returns an array of simulated prices over the simulation horizon.
+        Simulate dynamic token price evolution with drift affected by both external demand
+        and effective user activity. Effective user activity boosts the drift if active users (weighted
+        by their accumulated activity) hold more tokens.
         """
         n = len(self.total_unlocked_history)
         baseline_prices = self.compute_token_price()
-        P_jump = np.zeros(n)
-        P_jump[0] = 1.0
+        P_jump = np.ones(n)
+        
+        # Process demand driver.
+        if self.demand_series is not None:
+            demand_values = np.array(self.demand_series, dtype=float)
+            max_demand = demand_values.max()
+            normalized_demand = demand_values / max_demand
+            if len(normalized_demand) < n:
+                pad_length = n - len(normalized_demand)
+                normalized_demand = np.pad(normalized_demand, (0, pad_length), mode='constant', 
+                                           constant_values=normalized_demand[-1])
+            else:
+                normalized_demand = normalized_demand[:n]
+        else:
+            normalized_demand = np.ones(n) * 0.5
+        
+        # Drift parameters.
+        base_mu = 0.0
+        k = 0.03                 # External demand sensitivity.
+        reference = 0.5
+        k_activity = 0.1         # Sensitivity to effective user activity.
+        ref_activity = 0.5       # Reference effective active token fraction.
+        drift_min = -0.1
+        drift_max = 0.5
+        
+        # Helper: effective token value based on activity.
+        def effective_tokens(user):
+            # Increase a user's influence by a factor based on active_days.
+            return user.tokens * (1 + 0.1 * user.active_days)
+        
         for t in range(1, n):
-            diffusion = np.exp((self.mu - 0.5 * self.sigma**2) * dt + self.sigma * np.sqrt(dt) * np.random.randn())
+            # Compute drift from external demand.
+            drift_t = base_mu + k * (normalized_demand[t] - reference)
+            log_noise = np.random.lognormal(mean=0, sigma=0.01) - 1.0
+            drift_t += log_noise
+            
+            # Compute effective active fraction.
+            total_eff = sum(effective_tokens(user) for user in self.users)
+            active_eff = sum(effective_tokens(user) for user in self.users if user.active)
+            weighted_active_fraction = (active_eff / total_eff) if total_eff > 0 else ref_activity
+            
+            # Add drift from user activity.
+            drift_t += k_activity * (weighted_active_fraction - ref_activity)
+            drift_t = np.clip(drift_t, drift_min, drift_max)
+            
+            diffusion = np.exp((drift_t - 0.5 * self.sigma**2) * dt +
+                               self.sigma * np.sqrt(dt) * np.random.randn())
             if np.random.rand() < self.jump_intensity * dt:
                 jump = 1.0 + np.random.normal(self.jump_mean, self.jump_std)
             else:

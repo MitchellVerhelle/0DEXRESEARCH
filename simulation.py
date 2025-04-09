@@ -10,17 +10,10 @@ from activity_stats import generate_stats
 class MonteCarloSimulation:
     def __init__(self, num_users=1500000, total_supply=100_000_000, preTGE_steps=100, simulation_horizon=60,
                  airdrop_policy=None, preTGE_rewards_policy=None, postTGE_rewards_policy=None, airdrop_allocation_fraction=0.15,
-                 initial_price=10.0):
+                 initial_price=10.0, buyback_rate=0.2, elasticity=0.5, demand_series=None):
         """
         Parameters:
-          - num_users: Total number of simulated users.
-          - total_supply: Total token supply.
-          - preTGE_steps: Number of simulation steps in the pre-TGE phase.
-          - simulation_horizon: Number of months to simulate post-TGE.
-          - airdrop_policy: An airdrop conversion policy (default: LinearAirdropPolicy).
-          - preTGE_rewards_policy: A pre-TGE rewards policy (default: GenericPreTGERewardPolicy).
-          - airdrop_allocation_fraction: Fraction of total supply allocated for the airdrop.
-          - initial_price: Projected initial token price.
+          - demand_series: Array-like sequence of raw demand values that will drive drift.
         """
         self.num_users = num_users
         self.total_supply = total_supply
@@ -30,18 +23,15 @@ class MonteCarloSimulation:
         self.preTGE_rewards_policy = preTGE_rewards_policy if preTGE_rewards_policy is not None else GenericPreTGERewardPolicy()
         self.postTGE_rewards_policy = postTGE_rewards_policy if postTGE_rewards_policy is not None else GenericPostTGERewardPolicy()
         self.initial_price = initial_price
-        
+        self.buyback_rate = buyback_rate
+        self.elasticity = elasticity
+
         self.user_pool = UserPool(num_users=self.num_users, airdrop_policy=self.airdrop_policy)
         self.post_tge_manager = PostTGERewardsManager(total_supply=self.total_supply)
         self.airdrop_allocation_fraction = airdrop_allocation_fraction
-    
+        self.demand_series = demand_series
+
     def simulate_preTGE(self):
-        """
-        Simulate the pre-TGE phase.
-        Each step, users perform their 'PreTGE' behavior.
-        Then, activity stats are generated (via generate_stats) and used by the preTGE rewards policy
-        to accumulate airdrop points.
-        """
         for _ in range(self.preTGE_steps):
             self.user_pool.step_all('PreTGE')
         
@@ -50,107 +40,142 @@ class MonteCarloSimulation:
                 stats = generate_stats(user)
                 user.airdrop_points += self.preTGE_rewards_policy.calculate_points(stats, user)
         
-        # Normalize airdrop points to [0,1]
         max_points = max(u.airdrop_points for u in self.user_pool.users) or 1
         for u in self.user_pool.users:
             u.airdrop_points /= max_points
 
     def simulate_TGE(self):
-        """At TGE, convert accumulated airdrop points to tokens."""
         self.user_pool.step_all('TGE')
     
     def simulate_postTGE(self):
         """
-        Simulate the post-TGE phase in a stepwise manner.
+        Simulate the post-TGE phase by, for each time step:
+          - Computing a vesting-based baseline price from unlocked allocations,
+          - Computing drift from external demand and from effective user participation,
+          - Computing a one-period multiplier using a jump-diffusion process,
+          - Final price = baseline * multiplier.
         
-        For each month:
-          1. Compute vesting (unlocked tokens) via PostTGERewardsManager.
-          2. Calculate a baseline price using a supply/demand model.
-          3. Update the dynamic multiplier via a jump-diffusion step.
-          4. Update the dynamic price = baseline price * dynamic multiplier.
-          5. Update user retention (active fraction) based on the current dynamic price.
-          6. Let users perform their 'PostTGE' behavior.
-          7. The updated active fraction feeds back into the next time step.
+        The effective user participation takes into account both each user’s tokens and
+        their original endowment. In particular, we define:
+        
+          effective_weight = tokens × (1 + 0.1 × active_days) + β × endowment,
+        
+        with β=1.0 (by default). Then the weighted active fraction is computed over all users
+        and is used to boost (or depress) drift.
         """
         months = np.arange(0, self.simulation_horizon + 1)
+        num_steps = len(months)
+        
+        # Normalize the demand series.
+        if self.demand_series is not None:
+            demand_values = np.array(self.demand_series, dtype=float)
+            max_demand = demand_values.max()
+            normalized_demand = demand_values / max_demand
+            if len(normalized_demand) < num_steps:
+                pad_length = num_steps - len(normalized_demand)
+                normalized_demand = np.pad(normalized_demand, (0, pad_length),
+                                           mode='constant', constant_values=normalized_demand[-1])
+            else:
+                normalized_demand = normalized_demand[:num_steps]
+        else:
+            normalized_demand = np.ones(num_steps) * 0.5
+        
         total_unlocked_history = []
         unlocked_history = {group: [] for group in self.post_tge_manager.schedules.keys()}
-        baseline_prices = []
 
-        # Compute vesting (baseline supply) at each month.
-        for month in months:
-            allocations = self.post_tge_manager.get_unlocked_allocations(month)
-            total_unlocked = sum(allocations.values())
-            total_unlocked_history.append(total_unlocked)
-            for group, tokens in allocations.items():
-                unlocked_history[group].append(tokens)
-            # Compute baseline price using a simplified supply/demand model:
-            # Assume: circulating_supply = TGE_total + (total_unlocked - unlocked_at_TGE)
-            # effective_supply = TGE_total + (total_unlocked - unlocked_at_TGE) * (1 - buyback_rate)
-            # combined_supply = 0.5 * (circulating_supply + effective_supply)
-            TGE_total = self.airdrop_allocation_fraction * self.total_supply
-            if month == 0:
-                unlocked_at_TGE = total_unlocked
-            circulating_supply = TGE_total + (total_unlocked - unlocked_at_TGE)
-            effective_supply = TGE_total + (total_unlocked - unlocked_at_TGE) * (1 - 0.2)  # using buyback_rate=0.2
-            combined_supply = 0.5 * (circulating_supply + effective_supply)
-            baseline = self.initial_price * (TGE_total / combined_supply) ** 1.0
-            baseline_prices.append(baseline)
+        # Precompute baseline constants.
+        TGE_total = self.airdrop_allocation_fraction * self.total_supply
+        allocations0 = self.post_tge_manager.get_unlocked_allocations(0)
+        unlocked_at_TGE_total = sum(allocations0.values())
         
-        # Now iterate month-by-month updating dynamic price and user retention.
-        T = self.simulation_horizon
+        # Parameters for drift and diffusion.
+        base_mu = 0.0
+        k = 0.5                  # Sensitivity to external (normalized) demand.
+        reference = 0.5
+        k_activity = 0.3         # Sensitivity to effective user activity.
+        ref_activity = 0.5       # Reference effective active fraction.
+        drift_min = -1.0
+        drift_max = 1.0
+        sigma = 0.2
+        jump_intensity = 0.3
+        jump_mean = -0.1
+        jump_std = 0.15
         dt = 1
-        dynamic_prices = np.zeros(T+1)
-        dynamic_prices[0] = baseline_prices[0]
-        dynamic_multiplier = np.ones(T+1)
-        active_fraction_history = np.zeros(T+1)
-        active_fraction_history[0] = 0.1  # initial active fraction
-        p0 = self.initial_price
-        # Parameters for jump-diffusion:
-        mu = 0.0
-        sigma = 0.05
-        jump_intensity = 0.1
-        jump_mean = -0.05
-        jump_std = 0.1
-        # Parameters for retention dynamics:
-        alpha_rate = 0.1
-        beta_rate = 0.01
-        theta = 0.85
-        sigma_de = 0.01
 
-        for t in range(T):
-            # Update dynamic multiplier via jump-diffusion.
-            diffusion = np.exp((mu - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * np.random.randn())
-            jump = 1.0
+        # Parameter for endowment influence.
+        beta = 1.0
+
+        final_prices = np.zeros(num_steps)
+        active_fraction_history = np.zeros(num_steps)
+
+        # Time step 0: compute baseline price.
+        alloc = self.post_tge_manager.get_unlocked_allocations(0)
+        total_unlocked = sum(alloc.values())
+        total_unlocked_history.append(total_unlocked)
+        for group, tokens in alloc.items():
+            unlocked_history[group].append(tokens)
+        circulating_supply = TGE_total + (total_unlocked - unlocked_at_TGE_total)
+        effective_supply = TGE_total + (total_unlocked - unlocked_at_TGE_total) * (1 - self.buyback_rate)
+        combined_supply = 0.5 * (circulating_supply + effective_supply)
+        baseline = self.initial_price * (TGE_total / combined_supply) ** self.elasticity
+        final_prices[0] = baseline
+        active_fraction_history[0] = 0.1
+
+        # For time steps 1...T.
+        for t in range(1, num_steps):
+            # Compute the vesting-based baseline price for time t.
+            alloc = self.post_tge_manager.get_unlocked_allocations(t)
+            tot_unlocked = sum(alloc.values())
+            total_unlocked_history.append(tot_unlocked)
+            for group, tokens in alloc.items():
+                unlocked_history[group].append(tokens)
+            circulating_supply = TGE_total + (tot_unlocked - unlocked_at_TGE_total)
+            effective_supply = TGE_total + (tot_unlocked - unlocked_at_TGE_total) * (1 - self.buyback_rate)
+            combined_supply = 0.5 * (circulating_supply + effective_supply)
+            baseline = self.initial_price * (TGE_total / combined_supply) ** self.elasticity
+
+            # Compute drift from external demand.
+            drift = base_mu + k * (normalized_demand[t] - reference)
+            log_noise = np.random.lognormal(mean=0, sigma=0.01) - 1.0
+            drift += log_noise
+
+            # Compute effective user weight across the population.
+            total_eff = 0.0
+            active_eff = 0.0
+            for user in self.user_pool.users:
+                # Now incorporating both tokens and endowment.
+                eff = user.tokens * (1 + 0.1 * user.active_days) + beta * user.endowment
+                total_eff += eff
+                if user.active:
+                    active_eff += eff
+            weighted_active_fraction = (active_eff / total_eff) if total_eff > 0 else ref_activity
+            drift += k_activity * (weighted_active_fraction - ref_activity)
+            drift = np.clip(drift, drift_min, drift_max)
+
+            # Compute the one-period multiplier from jump-diffusion.
+            multiplier = np.exp((drift - 0.5 * sigma**2) * dt +
+                                  sigma * np.sqrt(dt) * np.random.randn())
             if np.random.rand() < jump_intensity * dt:
-                jump = 1.0 + np.random.normal(jump_mean, jump_std)
-            dynamic_multiplier[t+1] = dynamic_multiplier[t] * diffusion * jump
-            dynamic_prices[t+1] = baseline_prices[t+1] * dynamic_multiplier[t+1]
+                multiplier *= (1.0 + np.random.normal(jump_mean, jump_std))
+            final_prices[t] = baseline * multiplier
 
-            # Update active fraction using Euler–Maruyama.
-            A = active_fraction_history[t]
-            p_t = dynamic_prices[t]
-            dA_dt = alpha_rate * (1 - A) - beta_rate * (1 + theta * ((p_t - p0) / p0)) * A
-            noise = np.random.normal(0, sigma_de)
-            A_new = A + (dA_dt + noise) * dt
-            A_new = max(0.0, min(1.0, A_new))
-            active_fraction_history[t+1] = A_new
-
-            # Update user activity for this time step.
+            # Update user state.
             for user in self.user_pool.users:
                 user.step(
-                    'PostTGE',
-                    current_price=dynamic_prices[t+1],
-                    baseline_price=baseline_prices[t+1],
+                    phase='PostTGE',
+                    current_price=final_prices[t],
+                    baseline_price=baseline,
                     postTGE_rewards_policy=self.postTGE_rewards_policy
                 )
-        
+            active_users = sum(1 for user in self.user_pool.users if user.active)
+            active_fraction_history[t] = active_users / len(self.user_pool.users)
+            
         return {
             "months": months,
+            "dynamic_prices": final_prices,
+            "active_fraction_history": active_fraction_history,
             "total_unlocked_history": total_unlocked_history,
-            "unlocked_history": unlocked_history,
-            "dynamic_prices": dynamic_prices,
-            "active_fraction_history": active_fraction_history
+            "unlocked_history": unlocked_history
         }
 
     def run(self):
@@ -162,17 +187,15 @@ class MonteCarloSimulation:
         self.simulate_TGE()
         print("TGE simulation complete.")
 
-        # Scale TGE tokens to match airdrop_allocation_fraction of total_supply.
         raw_TGE_total = sum(user.tokens for user in self.user_pool.users)
         scaled_TGE_total = self.airdrop_allocation_fraction * self.total_supply
         if raw_TGE_total > 0:
             for user in self.user_pool.users:
-                user.tokens = user.tokens * (scaled_TGE_total / raw_TGE_total)
+                user.tokens *= (scaled_TGE_total / raw_TGE_total)
         else:
             for user in self.user_pool.users:
                 user.tokens = 0
-        scaled_total = sum(user.tokens for user in self.user_pool.users)
-        print(f"TGE tokens assigned (scaled to {self.airdrop_allocation_fraction*100:.0f}%): {scaled_total:.2f}")
+        print(f"TGE tokens assigned (scaled to {self.airdrop_allocation_fraction*100:.0f}%): {scaled_TGE_total:.2f}")
 
         distribution = {"small": 0.0, "medium": 0.0, "large": 0.0, "sybil": 0.0}
         for u in self.user_pool.users:
@@ -185,23 +208,37 @@ class MonteCarloSimulation:
                     distribution["medium"] += u.tokens
                 elif u.user_size == 'large':
                     distribution["large"] += u.tokens
-        if scaled_total > 0:
+        if scaled_TGE_total > 0:
             for k in distribution:
-                distribution[k] = (distribution[k] / scaled_total) * 100.0
+                distribution[k] = (distribution[k] / scaled_TGE_total) * 100.0
 
-        print("Distribution by user type (percent):", distribution)
-
-        print("=== Running Post-TGE Simulation (Dynamic Phase) ===")
+        print("=== Running Post-TGE Simulation (Dynamic Price Evolution) ===")
         postTGE_results = self.simulate_postTGE()
         print("Post-TGE simulation complete.")
 
-        return {
+        results = {
             "scaled_TGE_total": scaled_TGE_total,
-            **postTGE_results,
+            "months": postTGE_results["months"],
+            "dynamic_prices": postTGE_results["dynamic_prices"],
+            "active_fraction_history": postTGE_results["active_fraction_history"],
+            "total_unlocked_history": postTGE_results["total_unlocked_history"],
+            "unlocked_history": postTGE_results["unlocked_history"],
             "distribution": distribution
         }
+        return results
 
 if __name__ == '__main__':
+    # For testing purposes.
+    demand_values = np.array([
+        45, 25, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 5, 15, 5,
+        12, 1, 43, 5, 11, 1,
+        66, 2, 3, 1, 77, 3, 3, 3,
+        69, 3, 1, 3, 65, 2, 1, 2, 47,
+        2, 4, 2, 38, 2, 1, 2, 37, 3,
+        2, 2, 22, 3, 1, 2, 18, 1, 2,
+        1, 21, 2, 1, 3
+    ], dtype=float)
     sim = MonteCarloSimulation(
         num_users=10000,
         total_supply=100_000_000,
@@ -211,7 +248,8 @@ if __name__ == '__main__':
         preTGE_rewards_policy=GenericPreTGERewardPolicy(),
         postTGE_rewards_policy=GenericPostTGERewardPolicy(),
         airdrop_allocation_fraction=0.15,
-        initial_price=10.0
+        initial_price=10.0,
+        demand_series=demand_values
     )
     results = sim.run()
     print("Simulation finished.")
